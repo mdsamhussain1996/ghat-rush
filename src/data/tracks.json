@@ -1,0 +1,92 @@
+[
+  {
+    "id": "coast_route_1",
+    "name": "Konkan Cliffs",
+    "environment": "coastal",
+    "environmentName": "Coastal Highway",
+    "routeNumber": 1,
+    "timeOfDay": "sunset",
+    "weather": "clear",
+    "laps": 3,
+    "lapLengthMeters": 2800,
+    "roadWidth": 14,
+    "lanes": 3,
+    "trafficDensity": 0.45,
+    "description": "Scenic sunset seaside run past swaying coconut palms, sea cliffs and fishing harbors.",
+    "rivals": [
+      { "name": "Raftaar Roy", "bike": "vayu_r7", "skill": 0.88, "color": "#f59e0b", "personality": "aggressive" },
+      { "name": "Zoya Mirza", "bike": "chetak_300", "skill": 0.84, "color": "#06b6d4", "personality": "smooth" },
+      { "name": "Vikram Volt", "bike": "trishul_650", "skill": 0.80, "color": "#10b981", "personality": "overtaker" },
+      { "name": "Tara Torque", "bike": "chakra_750", "skill": 0.77, "color": "#ec4899", "personality": "smooth" },
+      { "name": "Kabir Dash", "bike": "vayu_150", "skill": 0.74, "color": "#8b5cf6", "personality": "blocker" }
+    ],
+    "controlPoints": [
+      { "x": 0, "y": 2, "z": 0, "bank": 0 },
+      { "x": 0, "y": 4, "z": 400, "bank": 0 },
+      { "x": 70, "y": 10, "z": 800, "bank": 0.08 },
+      { "x": 220, "y": 18, "z": 1100, "bank": 0.14 },
+      { "x": 380, "y": 14, "z": 1050, "bank": 0.12 },
+      { "x": 480, "y": 8, "z": 700, "bank": -0.06 },
+      { "x": 420, "y": 4, "z": 300, "bank": -0.10 },
+      { "x": 240, "y": 2, "z": -150, "bank": -0.12 },
+      { "x": 60, "y": 1, "z": -120, "bank": -0.04 }
+    ]
+  },
+  {
+    "id": "monsoon_route_1",
+    "name": "Malshej Hairpins",
+    "environment": "monsoon",
+    "environmentName": "Monsoon Ghats",
+    "routeNumber": 1,
+    "timeOfDay": "day",
+    "weather": "rain",
+    "laps": 3,
+    "lapLengthMeters": 2600,
+    "roadWidth": 12,
+    "lanes": 2,
+    "trafficDensity": 0.40,
+    "description": "Mist-shrouded mountain ghat with roadside waterfalls, hairpins and wet asphalt.",
+    "rivals": [
+      { "name": "Zoya Mirza", "bike": "chetak_300", "skill": 0.86, "color": "#06b6d4", "personality": "smooth" },
+      { "name": "Vikram Volt", "bike": "trishul_650", "skill": 0.82, "color": "#10b981", "personality": "overtaker" },
+      { "name": "Raftaar Roy", "bike": "vayu_r7", "skill": 0.87, "color": "#f59e0b", "personality": "aggressive" }
+    ],
+    "controlPoints": [
+      { "x": 0, "y": 0, "z": 0, "bank": 0 },
+      { "x": -60, "y": 15, "z": 400, "bank": -0.12 },
+      { "x": 120, "y": 35, "z": 900, "bank": 0.18 },
+      { "x": -100, "y": 55, "z": 1400, "bank": -0.22 },
+      { "x": 80, "y": 70, "z": 1900, "bank": 0.16 },
+      { "x": 0, "y": 40, "z": 2300, "bank": 0 },
+      { "x": 0, "y": 0, "z": 2600, "bank": 0 }
+    ]
+  },
+  {
+    "id": "neon_route_1",
+    "name": "Bandra Flyover",
+    "environment": "neon",
+    "environmentName": "Neon City Night",
+    "routeNumber": 1,
+    "timeOfDay": "night",
+    "weather": "rain",
+    "laps": 3,
+    "lapLengthMeters": 3000,
+    "roadWidth": 16,
+    "lanes": 4,
+    "trafficDensity": 0.55,
+    "description": "High-speed multi-lane elevated highway across neon-lit skyscrapers and cable bridges.",
+    "rivals": [
+      { "name": "Raftaar Roy", "bike": "garuda_1300", "skill": 0.92, "color": "#f59e0b", "personality": "aggressive" },
+      { "name": "Zoya Mirza", "bike": "bijli_ev", "skill": 0.90, "color": "#06b6d4", "personality": "smooth" },
+      { "name": "Vikram Volt", "bike": "vayu_r7", "skill": 0.86, "color": "#10b981", "personality": "overtaker" }
+    ],
+    "controlPoints": [
+      { "x": 0, "y": 0, "z": 0, "bank": 0 },
+      { "x": 0, "y": 20, "z": 500, "bank": 0 },
+      { "x": 140, "y": 25, "z": 1000, "bank": 0.10 },
+      { "x": 180, "y": 25, "z": 1600, "bank": 0.05 },
+      { "x": -80, "y": 15, "z": 2200, "bank": -0.10 },
+      { "x": 0, "y": 0, "z": 3000, "bank": 0 }
+    ]
+  }
+]

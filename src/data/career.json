@@ -1,0 +1,47 @@
+[
+  {
+    "id": "league_coast",
+    "name": "Coastline Cup",
+    "environment": "coastal",
+    "requiredStars": 0,
+    "bossRival": {
+      "name": "Kabir Dash",
+      "intro": "Think you can handle the Konkan coastal crosswinds, rookie? Let's see your line.",
+      "bike": "vayu_150",
+      "reward": 15000
+    },
+    "races": [
+      { "trackId": "coast_route_1", "laps": 3, "rewardCash": 5000, "starsTarget": [ "Top 3 Finish", "3 Near Misses", "Clean Lap" ] }
+    ]
+  },
+  {
+    "id": "league_ghats",
+    "name": "Monsoon Trophy",
+    "environment": "monsoon",
+    "requiredStars": 3,
+    "bossRival": {
+      "name": "Tara Torque",
+      "intro": "These wet hairpins don't forgive mistakes. Keep your rear tire in check.",
+      "bike": "chakra_750",
+      "reward": 25000
+    },
+    "races": [
+      { "trackId": "monsoon_route_1", "laps": 3, "rewardCash": 9000, "starsTarget": [ "Win the Race", "5 Near Misses", "Draft for 4s" ] }
+    ]
+  },
+  {
+    "id": "league_neon",
+    "name": "Neon Apex",
+    "environment": "neon",
+    "requiredStars": 6,
+    "bossRival": {
+      "name": "Raftaar Roy",
+      "intro": "I own the flyovers at midnight. You're just another shadow in my mirrors.",
+      "bike": "vayu_r7",
+      "reward": 60000
+    },
+    "races": [
+      { "trackId": "neon_route_1", "laps": 3, "rewardCash": 20000, "starsTarget": [ "1st Place", "Top Speed 260 km/h", "Full Nitro Chain" ] }
+    ]
+  }
+]
