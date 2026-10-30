@@ -44,13 +44,13 @@ export class HUD {
       </div>
 
       <div id="hud-bottom-right">
-        <svg id="speedo-svg" width="140" height="140" viewBox="0 0 140 140">
-          <circle cx="70" cy="70" r="54" fill="none" stroke="#222b35" stroke-width="8" stroke-dasharray="270" stroke-dashoffset="65" stroke-linecap="round"/>
-          <circle id="speedo-arc" cx="70" cy="70" r="54" fill="none" stroke="url(#speedo-grad)" stroke-width="8" stroke-dasharray="270" stroke-dashoffset="270" stroke-linecap="round"/>
+        <svg id="speedo-svg" width="160" height="160" viewBox="0 0 160 160">
+          <circle cx="80" cy="80" r="64" fill="none" stroke="#1e293b" stroke-width="10" stroke-dasharray="320" stroke-dashoffset="80" stroke-linecap="round"/>
+          <circle id="speedo-arc" cx="80" cy="80" r="64" fill="none" stroke="url(#speedo-grad)" stroke-width="10" stroke-dasharray="320" stroke-dashoffset="320" stroke-linecap="round"/>
           <defs>
             <linearGradient id="speedo-grad" x1="0%" y1="0%" x2="100%" y2="0%">
               <stop offset="0%" stop-color="#00d2ff"/>
-              <stop offset="60%" stop-color="#f59e0b"/>
+              <stop offset="55%" stop-color="#f59e0b"/>
               <stop offset="100%" stop-color="#ef4444"/>
             </linearGradient>
           </defs>
@@ -164,9 +164,9 @@ export class HUD {
     this.speedoVal.innerText = speedKmh;
     this.speedoGear.innerText = playerBike.gear;
 
-    // Speedometer Arc: dashoffset from 270 (0 km/h) down to 65 (320 km/h)
+    // Speedometer Arc: dashoffset from 320 (0 km/h) down to 80 (320 km/h)
     const speedRatio = Math.min(1.0, speedKmh / 320);
-    const dashOffset = 270 - (speedRatio * 205);
+    const dashOffset = 320 - (speedRatio * 240);
     this.speedoArc.setAttribute('stroke-dashoffset', dashOffset.toFixed(1));
 
     // 4. Nitro Bar

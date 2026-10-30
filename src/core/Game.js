@@ -82,6 +82,10 @@ export class Game {
     // 2. Traffic Pool
     this.traffic = new Traffic(this.scene, this.spline, this.trackConfig);
 
+    this.playerBike.onRespawn = (s, range) => {
+      this.traffic.clearAhead(s, range);
+    };
+
     // 3. 5 AI Rivals
     this.rivalAI = new RivalAI(this.scene, this.spline, this.trackConfig, bikesData);
   }
@@ -196,7 +200,7 @@ export class Game {
       this.playerBike.update(dt, controls, rivalsBikes, activeTraffic);
 
       // 4. Update Camera & Visuals
-      this.cameraRig.update(dt, this.playerBike);
+      this.cameraRig.update(dt, this.playerBike, activeTraffic);
       this.sky.update(this.playerBike);
       this.postFX.update(dt, this.playerBike);
 
@@ -246,13 +250,8 @@ export class Game {
     this.nearMissCount = 0;
     this.currentLapStartTime = 0;
 
-    this.playerBike.s = 0;
-    this.playerBike.d = 0;
-    this.playerBike.speed = 0;
+    this.playerBike.reset();
     this.playerBike.lap = 1;
-    this.playerBike.nitro = this.playerBike.nitroCapacity;
-    this.playerBike.isCrashed = false;
-    this.playerBike.syncTransform();
 
     this.traffic.reset();
     this.rivalAI.reset();

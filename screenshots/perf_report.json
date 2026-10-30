@@ -1,8 +1,28 @@
 {
   "avgDesktopFps": 60,
-  "minDesktopFps": 58,
+  "minDesktopFps": 60,
   "avgMobileFps": 60,
   "minMobileFps": 60,
   "consoleErrorsCount": 0,
-  "timestamp": "2026-10-30T17:21:12.744Z"
+  "steeringTest": {
+    "tap0_2s": {
+      "movement": "0.54m",
+      "crashed": false
+    },
+    "tap0_6s": {
+      "movement": "2.18m",
+      "crashed": false
+    },
+    "tap1_0s": {
+      "movement": "3.64m",
+      "crashed": false
+    }
+  },
+  "respawnTest": {
+    "isCrashed": false,
+    "speedKmh": 125,
+    "d": -3.5,
+    "ghostTimer": 1.3166666666666673
+  },
+  "timestamp": "2026-10-30T18:14:06.775Z"
 }

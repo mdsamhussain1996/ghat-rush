@@ -35,7 +35,7 @@ export class CameraRig {
     return this.mode;
   }
 
-  update(dt, playerBike) {
+  update(dt, playerBike, activeTraffic = []) {
     if (!playerBike || !playerBike.group) return;
 
     const frame = this.spline.getFrameAtDistance(playerBike.s);
@@ -46,36 +46,53 @@ export class CameraRig {
 
     // 1. Dynamic FOV
     const speedRatio = Math.min(1.0, speedKmh / 300);
-    const targetFov = this.baseFov + (speedRatio * 12) + (isNitro ? 8 : 0);
+    const targetFov = this.baseFov + (speedRatio * 14) + (isNitro ? 8 : 0);
     this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, 6.0 * dt);
     this.camera.updateProjectionMatrix();
 
-    // 2. Camera offsets relative to bike in road space
-    let offsetBack = 4.2;
-    let offsetUp = 1.85;
-    let lookAheadDist = 14.0;
-    let lookUpDist = 0.55;
+    // 2. Camera offsets relative to bike in road space (Matches concept_coast.png)
+    let offsetBack = 4.6;
+    let offsetUp = 2.05;
+    let lookAheadDist = 18.0;
+    let lookUpDist = 0.35;
 
     if (this.mode === 'close') {
-      offsetBack = 3.2;
-      offsetUp = 1.45;
-      lookAheadDist = 12.0;
-      lookUpDist = 0.45;
+      offsetBack = 3.6;
+      offsetUp = 1.65;
+      lookAheadDist = 14.0;
+      lookUpDist = 0.40;
     } else if (this.mode === 'helmet') {
       offsetBack = -0.15;
       offsetUp = 1.25;
       lookAheadDist = 22.0;
-      lookUpDist = 0.8;
+      lookUpDist = 0.80;
     }
 
     // High speed pulls camera slightly further back for sense of speed
-    offsetBack += speedRatio * 0.9;
+    offsetBack += speedRatio * 0.75;
 
     // Target Camera Position: behind bike along Frenet tangent
     const targetPos = bikePos.clone()
       .addScaledVector(frame.tangent, -offsetBack)
       .addScaledVector(frame.normal, offsetUp)
-      .addScaledVector(frame.binormal, playerBike.d * 0.15); // subtle lateral lag
+      .addScaledVector(frame.binormal, playerBike.d * 0.12); // subtle lateral lag
+
+    // Camera Collision Avoidance with Vehicles (Bug A.3: prevent truck clipping into screen)
+    if (activeTraffic && activeTraffic.length > 0) {
+      for (const v of activeTraffic) {
+        if (!v.active || !v.group) continue;
+        const vPos = v.group.position;
+        const distSq = targetPos.distanceToSquared(vPos);
+        if (distSq < 10.0) { // within ~3.16m
+          const dist = Math.sqrt(distSq);
+          const pushAmount = (3.2 - dist) + 0.4;
+          // Pull camera forward towards player bike and up
+          const toBike = bikePos.clone().sub(targetPos).normalize();
+          targetPos.addScaledVector(toBike, pushAmount * 0.85);
+          targetPos.addScaledVector(frame.normal, pushAmount * 0.65);
+        }
+      }
+    }
 
     // Target Look-At: road ahead of the bike
     const targetLookAt = bikePos.clone()
@@ -106,7 +123,7 @@ export class CameraRig {
     this.camera.position.copy(this.currentPos);
     this.camera.lookAt(this.currentLookAt);
 
-    // Roll slightly with bike lean (subtle 15% roll)
+    // Roll slightly with bike lean (subtle 14% roll)
     if (this.mode !== 'helmet') {
       this.camera.rotateZ(playerBike.lean * 0.14);
     }

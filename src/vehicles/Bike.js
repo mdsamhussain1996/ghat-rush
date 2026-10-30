@@ -41,6 +41,10 @@ export class Bike {
 
     // Steering Smoothing & Rail Assist (Phase 0 Fixes)
     this.steerSmoothed = 0;
+    this.steerTapCount = 0;
+    this.lastSteerSign = 0;
+    this.preCrashSpeed = 0;
+    this.onRespawn = null;
     this.wobbleTimer = 0;
     this.wobbleMagnitude = 0;
     this.ghostTimer = 0; // Invulnerability timer after respawn
@@ -153,10 +157,12 @@ export class Bike {
     hl2.position.set(0.13, 0.74, 1.20);
     this.bikeMesh.add(hl1, hl2);
 
-    // LED Taillight
-    this.tailLightMat = new THREE.MeshBasicMaterial({ color: 0xcc1111 });
-    this.tailLight = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.06, 0.06), this.tailLightMat);
-    this.tailLight.position.set(0, 0.75, -0.78);
+    // Radiant Glowing LED Taillight Bar (concept_coast.png)
+    this.tailLightMat = new THREE.MeshBasicMaterial({ color: 0xff1744 });
+    this.tailLight = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.09, 0.06), this.tailLightMat);
+    this.tailLight.position.set(0, 0.76, -0.76);
+    const innerLight = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.07), new THREE.MeshBasicMaterial({ color: 0xffebee }));
+    this.tailLight.add(innerLight);
     this.bikeMesh.add(this.tailLight);
 
     // Number Board Decal ("27" racing board)
@@ -368,48 +374,83 @@ export class Bike {
       this.stoppie = Math.max(0, this.stoppie - 4.0 * dt);
     }
 
-    // 3. Steering & Lean Dynamics (Phase 0 Fixes: Speed-sensitive & 0.15s smoothing ramp)
-    this.steerSmoothed = THREE.MathUtils.lerp(this.steerSmoothed, controls.steer, Math.min(1.0, dt / 0.15));
+    // 3. Steering & Lean Dynamics (Phase 0 & 1 Follow-Up: 0.6s tap = ~3.5m one lane, capped lateral speed)
+    // Detect new steer tap vs continuous hold
+    const currentSteerSign = Math.sign(controls.steer);
+    if (currentSteerSign !== 0 && currentSteerSign !== this.lastSteerSign) {
+      this.steerTapCount = (this.steerTapCount || 0) + 1;
+    } else if (currentSteerSign === 0) {
+      this.steerTapCount = 0;
+    }
+    this.lastSteerSign = currentSteerSign;
 
-    const speedRatio = Math.min(1.0, this.speed / (300 / 3.6));
-    const maxLean = this.maxLeanRad * (1.0 - speedRatio * 0.36); // Caps from ~50° to ~32° at high speeds
-    const leanSpeed = 6.2 * (1.0 - speedRatio * 0.42); // Avoids twitchy instant over-steer
-    const targetLean = -this.steerSmoothed * maxLean * this.handling * (1 - this.wheelie * 0.65);
+    // Lean rate limited (<= 90 deg/s = 1.57 rad/s)
+    const maxLeanRate = (90 * Math.PI / 180); // 1.57 rad/s
+
+    if (Math.abs(controls.steer) < 0.05) {
+      // Eases back to upright when input is released (0.3s)
+      this.steerSmoothed = THREE.MathUtils.lerp(this.steerSmoothed, 0, Math.min(1.0, dt / 0.15));
+      this.lean = THREE.MathUtils.lerp(this.lean, 0, Math.min(1.0, dt / 0.30));
+    } else {
+      // Input smoothing ramp (0.15s)
+      this.steerSmoothed = THREE.MathUtils.lerp(this.steerSmoothed, controls.steer, Math.min(1.0, dt / 0.15));
+      const speedRatio = Math.min(1.0, this.speed / (300 / 3.6));
+      const maxLean = this.maxLeanRad * (1.0 - speedRatio * 0.35); // ~50 deg down to ~32 deg
+      const targetLean = -this.steerSmoothed * maxLean * this.handling * (1 - this.wheelie * 0.65);
+
+      const leanDiff = targetLean - this.lean;
+      const maxLeanChange = maxLeanRate * dt;
+      this.lean += THREE.MathUtils.clamp(leanDiff, -maxLeanChange, maxLeanChange);
+    }
 
     // Apply wobble from rail scrape if active
     const wobbleOffset = this.wobbleTimer > 0 ? Math.sin(this.wobbleTimer * 28) * this.wobbleMagnitude : 0;
-    this.lean = THREE.MathUtils.lerp(this.lean, targetLean + wobbleOffset, Math.min(1, leanSpeed * dt));
+    const effectiveLean = this.lean + wobbleOffset;
 
-    // Lateral displacement along road space: d
-    const lateralSpeed = (-this.lean / this.maxLeanRad) * (this.speed * 0.38);
-    this.d += lateralSpeed * dt;
+    // Lateral speed = f(lean) with a hard cap that decreases with speed
+    // At 200 km/h (55.5 m/s), max lateral speed is ~4.8 m/s:
+    // 0.2s tap = ~0.8m, 0.6s tap = ~3.0m (1 lane), 1.0s tap = ~4.8m (2 lanes, no rail crash)
+    const maxLateralSpeed = Math.max(4.2, 6.4 - (this.speed / (200 / 3.6)) * 1.6);
+    const leanFrac = THREE.MathUtils.clamp(-effectiveLean / this.maxLeanRad, -1.0, 1.0);
+    let lateralSpeed = leanFrac * maxLateralSpeed;
 
-    // Road Edge Limits & Light Lane Assist (Phase 0 Fixes)
+    // Road Edge Limits & Lane Assist
     const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
     const distToRail = halfWidth - Math.abs(this.d);
+    const steeringTowardRail = (this.d > 0 && controls.steer > 0.08) || (this.d < 0 && controls.steer < -0.08);
 
-    // Light lane assist: resists drifting into the rail on bends unless steering hard
-    if (distToRail < 1.2 && Math.abs(this.steerSmoothed) < 0.6) {
-      this.d -= Math.sign(this.d) * (1.2 - distToRail) * 2.2 * dt;
+    if (distToRail < 1.2) {
+      if (!steeringTowardRail) {
+        // Not steering toward rail -> gentle push back to the road
+        this.d -= Math.sign(this.d) * (1.2 - distToRail) * 3.5 * dt;
+      } else {
+        // Steering toward rail -> strong resistance until 2nd input
+        if (this.steerTapCount < 2) {
+          lateralSpeed *= 0.18; // 82% resistance against rail
+        }
+      }
     }
 
-    // Guardrail Scrape vs Crash Logic
-    if (Math.abs(this.d) > halfWidth - 0.2) {
-      const impactAngleDeg = Math.atan2(Math.abs(lateralSpeed), Math.max(1, this.speed)) * (180 / Math.PI);
-      const isHighSpeedHeadOn = (this.speed * 3.6 > 160 && Math.abs(this.lean) > 0.45);
+    this.d += lateralSpeed * dt;
 
-      if (impactAngleDeg > 25 || isHighSpeedHeadOn) {
-        // Severe impact -> Trigger Crash!
+    // Guardrail Scrape vs Crash Logic (Phase 0 Fix 4: Crash only above ~25 deg impact angle, else scrape)
+    if (Math.abs(this.d) >= halfWidth - 0.25) {
+      const impactAngleDeg = Math.atan2(Math.abs(lateralSpeed), Math.max(1, this.speed)) * (180 / Math.PI);
+
+      if (impactAngleDeg > 25.0) {
         this.triggerCrash();
         return;
       } else {
         // Rail scrape -> Wobble + speed loss + stay inside barrier!
-        this.d = Math.sign(this.d) * (halfWidth - 0.28);
+        this.d = Math.sign(this.d) * (halfWidth - 0.32);
         this.speed = Math.max(0, this.speed * (1.0 - 0.20 * dt * 60));
         this.wobbleTimer = 0.45;
-        this.wobbleMagnitude = 0.20;
+        this.wobbleMagnitude = 0.18;
       }
     }
+
+    // Strict safety clamp inside barriers at all times
+    this.d = THREE.MathUtils.clamp(this.d, -halfWidth + 0.35, halfWidth - 0.35);
 
     // 4. Advance distance along track
     this.s = (this.s + this.speed * dt);
@@ -511,17 +552,24 @@ export class Bike {
       if (this.comboResetTimer <= 0) this.nearMissCombo = 0;
     }
 
-    for (const v of trafficList) {
-      if (v.hasNearMissed) continue;
-      const sDist = Math.abs(v.s - this.s);
-      const dDist = Math.abs(v.d - this.d);
+    const playerSpeedKmh = this.getSpeedKmh();
+    if (playerSpeedKmh < 85) return;
 
-      // Pass within 0.8m laterally, alongside longitudinally, at > 95 km/h
-      if (sDist < 2.8 && dDist < 1.8 && this.getSpeedKmh() > 95) {
+    for (const v of trafficList) {
+      if (!v.active || v.hasNearMissed) continue;
+      const sDist = Math.abs(v.s - this.s);
+      const vHalfW = (v.width || 1.8) / 2;
+      const vHalfL = (v.length || 3.8) / 2;
+
+      // Calculate edge-to-edge lateral gap
+      const edgeGap = Math.abs(v.d - this.d) - (vHalfW + 0.35);
+
+      // Pass within 0.1m to 1.45m of vehicle edge while alongside
+      if (edgeGap >= 0.05 && edgeGap <= 1.45 && sDist < (vHalfL + 2.2)) {
         v.hasNearMissed = true;
         this.nearMissCombo++;
-        this.comboResetTimer = 2.5;
-        this.nitro = Math.min(this.nitroCapacity, this.nitro + 1.2);
+        this.comboResetTimer = 3.5;
+        this.nitro = Math.min(this.nitroCapacity, this.nitro + 1.25);
 
         if (this.isPlayer) {
           audio.playNearMiss();
@@ -555,6 +603,7 @@ export class Bike {
   triggerCrash() {
     if (this.isCrashed || this.ghostTimer > 0) return;
     this.isCrashed = true;
+    this.preCrashSpeed = this.speed;
     this.crashTimer = 2.0; // 2s tumble & slide before respawn
     this.nearMissCombo = 0;
     this.isDrafting = false;
@@ -576,14 +625,46 @@ export class Bike {
   respawnOnRoad() {
     this.isCrashed = false;
     this.ghostTimer = 1.5; // 1.5s ghost invulnerability
-    this.speed = 18.0; // Clean rolling restart at ~65 km/h
-    this.d = 0; // Centerline of track
+    this.speed = Math.max(16.0, (this.preCrashSpeed || 30.0) * 0.60); // 60% of pre-crash speed
+
+    // Nearest safe lane center: -3.5, 0, or 3.5
+    const lanes = [-3.5, 0, 3.5];
+    this.d = lanes.reduce((prev, curr) => Math.abs(curr - this.d) < Math.abs(prev - this.d) ? curr : prev);
+
     this.bikeMesh.rotation.set(0, 0, 0);
     this.bikeMesh.position.set(0, 0, 0);
     this.wheelie = 0;
     this.stoppie = 0;
     this.lean = 0;
     this.wobbleTimer = 0;
+
+    // Clear traffic within 40m ahead
+    if (this.onRespawn) {
+      this.onRespawn(this.s, 40);
+    }
+  }
+
+  reset() {
+    this.s = 0;
+    this.d = 0;
+    this.speed = 0;
+    this.lean = 0;
+    this.wheelie = 0;
+    this.stoppie = 0;
+    this.steerSmoothed = 0;
+    this.steerTapCount = 0;
+    this.wobbleTimer = 0;
+    this.ghostTimer = 0;
+    this.isCrashed = false;
+    this.crashTimer = 0;
+    this.isNitro = false;
+    this.isDrafting = false;
+    this.draftPersistTimer = 0;
+    this.nearMissCombo = 0;
+    this.bikeMesh.rotation.set(0, 0, 0);
+    this.bikeMesh.position.set(0, 0, 0);
+    this.nitro = this.nitroCapacity;
+    this.syncTransform();
   }
 
   syncTransform() {

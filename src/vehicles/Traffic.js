@@ -287,8 +287,8 @@ export class Traffic {
     else if (inactive.type === 'taxi') speedKmh = 75 + Math.random() * 25;
     else speedKmh = 50 + Math.random() * 20;
 
-    // Spawn 80m to 220m ahead of player
-    const spawnDist = 90 + Math.random() * 140;
+    // Spawn 90m to 220m ahead of player (never within 25m behind camera)
+    const spawnDist = 90 + Math.random() * 130;
     let s = (playerS + spawnDist) % this.spline.totalLength;
 
     // Check distance with already active vehicles to avoid overlaps
@@ -304,6 +304,22 @@ export class Traffic {
     inactive.group.visible = true;
 
     this.activeVehicles.push(inactive);
+  }
+
+  clearAhead(s, range = 40) {
+    const totalLen = this.spline.totalLength;
+    for (let i = this.activeVehicles.length - 1; i >= 0; i--) {
+      const v = this.activeVehicles[i];
+      let sRel = v.s - s;
+      if (sRel < -totalLen * 0.5) sRel += totalLen;
+      if (sRel > totalLen * 0.5) sRel -= totalLen;
+      // Clear anything from 5m behind up to range ahead
+      if (sRel >= -5 && sRel <= range) {
+        v.active = false;
+        v.group.visible = false;
+        this.activeVehicles.splice(i, 1);
+      }
+    }
   }
 
   update(dt, playerS, playerSpeed) {
