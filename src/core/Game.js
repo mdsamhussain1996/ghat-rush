@@ -123,6 +123,11 @@ export class Game {
   }
 
   update(dt) {
+    this.totalTime = (this.totalTime || 0) + dt;
+    if (this.scenery) {
+      this.scenery.update(dt, this.totalTime);
+    }
+
     const controls = this.input.getControls();
 
     // Camera mode toggle hotkey (C)

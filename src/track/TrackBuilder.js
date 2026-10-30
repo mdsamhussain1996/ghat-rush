@@ -134,44 +134,65 @@ export class TrackBuilder {
     const ctx = canvas.getContext('2d');
 
     // 1. Sandy gravel shoulder edges
-    ctx.fillStyle = '#9e8160';
+    ctx.fillStyle = '#947858';
     ctx.fillRect(0, 0, 1024, 512);
 
-    // 2. Asphalt highway surface (from u = 0.12 to u = 0.88 -> 123px to 901px)
+    // 2. Asphalt highway surface (from 124px to 900px)
     const roadLeft = 124;
     const roadRight = 900;
     const roadWidthPx = roadRight - roadLeft;
 
-    ctx.fillStyle = '#2c2e33';
+    ctx.fillStyle = '#282a2f';
     ctx.fillRect(roadLeft, 0, roadWidthPx, 512);
 
-    // Fine asphalt texture grain
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
-    for (let i = 0; i < 5000; i++) {
+    // Fine asphalt aggregate noise
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+    for (let i = 0; i < 4000; i++) {
       ctx.fillRect(roadLeft + Math.random() * roadWidthPx, Math.random() * 512, 2, 2);
     }
 
-    // 3. Red & White checkered rumble strips along inner shoulder boundary
+    // 3. Tyre Wear Darkening Lines in each of the 3 driving lanes
+    const laneWidth = (roadWidthPx - 28) / 3;
+    const laneCenters = [
+      roadLeft + 14 + laneWidth * 0.5,
+      roadLeft + 14 + laneWidth * 1.5,
+      roadLeft + 14 + laneWidth * 2.5
+    ];
+
+    ctx.fillStyle = 'rgba(15, 16, 20, 0.35)';
+    laneCenters.forEach(cx => {
+      // Left and right tyre paths in lane
+      ctx.fillRect(cx - 38, 0, 22, 512);
+      ctx.fillRect(cx + 16, 0, 22, 512);
+    });
+
+    // 4. Heavy Skid-mark Decals on bends
+    ctx.fillStyle = 'rgba(10, 11, 14, 0.55)';
+    ctx.beginPath();
+    ctx.ellipse(laneCenters[1] + 18, 180, 12, 140, 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(laneCenters[1] - 22, 220, 10, 110, 0.10, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 5. Red & White checkered rumble strips along inner shoulder boundary
     const rumbleWidth = 28;
     for (let y = 0; y < 512; y += 32) {
-      ctx.fillStyle = (y % 64 === 0) ? '#e63946' : '#f8f9fa';
-      // Left rumble strip
+      ctx.fillStyle = (y % 64 === 0) ? '#dc2626' : '#f8fafc';
       ctx.fillRect(roadLeft - rumbleWidth, y, rumbleWidth, 32);
-      // Right rumble strip
       ctx.fillRect(roadRight, y, rumbleWidth, 32);
     }
 
-    // 4. Solid bright white shoulder boundary lines
-    ctx.fillStyle = '#ffffff';
+    // 6. Solid bright white shoulder boundary lines (with subtle road wear)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
     ctx.fillRect(roadLeft + 4, 0, 10, 512);
     ctx.fillRect(roadRight - 14, 0, 10, 512);
 
-    // 5. Dashed center lane dividers (3 lanes = 2 dividers)
-    const laneWidth = (roadWidthPx - 28) / 3;
+    // 7. Dashed center lane dividers with realistic dashed spacing & wear
     const div1X = roadLeft + 14 + laneWidth;
     const div2X = roadLeft + 14 + laneWidth * 2;
 
-    ctx.fillStyle = '#f8f9fa';
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.92)';
     for (let y = 0; y < 512; y += 64) {
       ctx.fillRect(div1X - 5, y + 14, 10, 36);
       ctx.fillRect(div2X - 5, y + 14, 10, 36);

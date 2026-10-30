@@ -1,8 +1,8 @@
 {
-  "avgDesktopFps": 30,
-  "minDesktopFps": 30,
-  "avgMobileFps": 30,
-  "minMobileFps": 30,
+  "avgDesktopFps": 60,
+  "minDesktopFps": 58,
+  "avgMobileFps": 60,
+  "minMobileFps": 60,
   "consoleErrorsCount": 0,
-  "timestamp": "2026-10-30T16:36:20.024Z"
+  "timestamp": "2026-10-30T17:21:12.744Z"
 }
