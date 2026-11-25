@@ -971,6 +971,167 @@ async function runPhase4Checks(client) {
   console.log('✓ Phase 4 Minimap, Horizon Popups, Gaps/Banners, Finish Sweep & AI Personalities passed');
 }
 
+async function runPhase5Checks(client) {
+  console.log('--- Phase 5 Functional Checks (Perf Budget, Culling, Shared Mats, Quality/Auto, Mobile & Tilt) ---');
+  await client.navigate(`${BASE_URL}/?track=coast_route_1&autostart=1`);
+  client.clearErrors();
+  await client.clickCenter();
+
+  // 1. High-quality performance budget, behind-camera culling & shared rival materials
+  const perfCheck = await client.eval(`(() => {
+    const g = window.gameInstance;
+    g.loop.stop();
+    while (g.state === 'COUNTDOWN') g.update(1 / 60);
+    g.configureQualitySetting('high');
+    g.scenery.update(1 / 60, g.totalTime, g.cameraRig.camera);
+    g.render(0, performance.now());
+    const statsStart = g.renderer.getStats();
+
+    // Advance down the highway to s=750 so sectors behind start/previous bend are behind camera frustum
+    g.playerBike.s = 750;
+    g.playerBike.syncTransform();
+    g.cameraRig.reset(g.playerBike);
+    g.scenery.update(1 / 60, g.totalTime, g.cameraRig.camera);
+    g.render(0, performance.now());
+    const statsMid = g.renderer.getStats();
+
+    const hiddenSectors = g.scenery.sectors.filter(s => !s.group.visible).length;
+    const visibleSectors = g.scenery.sectors.filter(s => s.group.visible).length;
+    const hiddenQuadrants = (g.scenery.quadrants || []).filter(q => !q.group.visible).length;
+    const stats = statsStart;
+    g.playerBike.s = 0;
+    g.playerBike.syncTransform();
+    g.cameraRig.reset(g.playerBike);
+    const sharedBodyMat = g.rivalAI.rivals[0].bike.bodyMesh.material === g.rivalAI.rivals[1].bike.bodyMesh.material;
+    const sharedRiderMat = g.rivalAI.rivals[0].bike.rider.material === g.rivalAI.rivals[1].bike.rider.material;
+
+    // Quality presets check
+    g.configureQualitySetting('low');
+    const lowShadow = g.renderer.threeRenderer.shadowMap.enabled;
+    const lowCount = g.scenery.scalableInstances[0].mesh.count;
+
+    g.configureQualitySetting('medium');
+    const medShadow = g.renderer.threeRenderer.shadowMap.enabled;
+    const medCount = g.scenery.scalableInstances[0].mesh.count;
+
+    g.configureQualitySetting('high');
+    const highShadow = g.renderer.threeRenderer.shadowMap.enabled;
+    const highCount = g.scenery.scalableInstances[0].mesh.count;
+    const fullCount = g.scenery.scalableInstances[0].fullCount;
+
+    // Deterministic 3s auto-detect simulation check (slow frame times -> low)
+    g.configureQualitySetting('auto');
+    for (let i = 0; i < 120; i++) g.recordAutoQualitySample(32);
+    const autoLowResolved = g.autoQualityState.resolved;
+    const autoLowPreset = g.effectiveQuality;
+
+    // Reset back to auto for live 3.3s RAF timing test
+    g.configureQualitySetting('auto');
+    g.loop.start();
+
+    return {
+      drawCalls: stats.drawCalls,
+      triangles: stats.triangles,
+      midDrawCalls: statsMid.drawCalls,
+      midTriangles: statsMid.triangles,
+      hiddenSectors,
+      visibleSectors,
+      hiddenQuadrants,
+      sharedBodyMat,
+      sharedRiderMat,
+      lowShadow,
+      medShadow,
+      highShadow,
+      lowCount,
+      medCount,
+      highCount,
+      fullCount,
+      autoLowResolved,
+      autoLowPreset
+    };
+  })()`);
+
+  console.log(`  Coastal High stats: start=(${perfCheck.drawCalls} calls, ${perfCheck.triangles} tris), mid=(${perfCheck.midDrawCalls} calls, ${perfCheck.midTriangles} tris), culledSectors=${perfCheck.hiddenSectors}/8, culledQuads=${perfCheck.hiddenQuadrants}`);
+  assert(perfCheck.drawCalls <= 180 && perfCheck.triangles <= 60000,
+    `Coastal High quality exceeded budget: drawCalls=${perfCheck.drawCalls}, triangles=${perfCheck.triangles}`);
+  assert(perfCheck.hiddenSectors > 0 && perfCheck.visibleSectors > 0,
+    `Expected behind-camera sector culling (hidden=${perfCheck.hiddenSectors}, visible=${perfCheck.visibleSectors})`);
+  assert(perfCheck.sharedBodyMat && perfCheck.sharedRiderMat, 'AI rivals must share bike body and rider materials');
+  assert(!perfCheck.lowShadow && perfCheck.medShadow && perfCheck.highShadow,
+    `Quality shadowMap mismatch: low=${perfCheck.lowShadow}, med=${perfCheck.medShadow}, high=${perfCheck.highShadow}`);
+  assert(perfCheck.lowCount < perfCheck.medCount && perfCheck.medCount < perfCheck.highCount && perfCheck.highCount === perfCheck.fullCount,
+    `Scenery quality density scaling mismatch: ${perfCheck.lowCount} / ${perfCheck.medCount} / ${perfCheck.highCount} vs ${perfCheck.fullCount}`);
+  assert(perfCheck.autoLowResolved && perfCheck.autoLowPreset === 'low',
+    `Auto quality 3s slow simulation should resolve to low, got ${perfCheck.autoLowPreset}`);
+  console.log('✓ Phase 5 performance budget, culling, shared materials & quality presets passed');
+
+  // Wait 3.3s for live RAF frame-time auto-detect resolution
+  await sleep(3350);
+  const autoLive = await client.eval(`(() => {
+    const g = window.gameInstance;
+    const res = { resolved: g.autoQualityState.resolved, preset: g.effectiveQuality, elapsed: g.autoQualityState.elapsed, frames: g.autoQualityState.frames };
+    g.configureQualitySetting('high');
+    return res;
+  })()`);
+  assert(autoLive.resolved && ['high', 'medium', 'low'].includes(autoLive.preset),
+    `Live 3s auto-quality failed to resolve: ${JSON.stringify(autoLive)}`);
+  console.log(`✓ 3s auto-quality live detection resolved to '${autoLive.preset}' (${autoLive.frames} frames in ${autoLive.elapsed.toFixed(2)}s)`);
+
+  // 2. Mobile emulation: portrait rotate overlay & landscape touch controls
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await client.send('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 2,
+    mobile: true
+  });
+  await client.eval('window.dispatchEvent(new Event("resize"))');
+  await client.waitUntil('!document.getElementById("rotate-device-overlay").classList.contains("hidden") && window.gameInstance.state === "PAUSED"', 'Portrait rotate overlay shown and pauses race');
+  console.log('✓ Portrait Rotate Your Device overlay + auto-pause verified');
+
+  await client.send('Emulation.setDeviceMetricsOverride', {
+    width: 844,
+    height: 390,
+    deviceScaleFactor: 2,
+    mobile: true
+  });
+  await client.eval('window.dispatchEvent(new Event("resize"))');
+  await client.waitUntil('document.getElementById("rotate-device-overlay").classList.contains("hidden")', 'Rotate overlay hides in landscape');
+  const touchDisplay = await client.eval('getComputedStyle(document.getElementById("touch-controls")).display');
+  assert(touchDisplay === 'block', `Expected #touch-controls visible on mobile landscape, got display=${touchDisplay}`);
+  console.log('✓ Landscape mobile touch controls verified');
+
+  // 3. Settings Tilt Steering toggle & Calibrate button
+  await client.eval('window.gameInstance.enterMenuScreen("settings")');
+  await client.waitUntil('!!document.getElementById("settings-tilt-toggle") && !!document.getElementById("settings-calibrate-btn")', 'Settings tilt controls rendered');
+  const tiltCheck = await client.eval(`(() => {
+    const g = window.gameInstance;
+    g.input.tiltGamma = 14.5;
+    document.getElementById('settings-tilt-toggle').click();
+    document.getElementById('settings-calibrate-btn').click();
+    const afterEnable = { enabled: g.input.tiltEnabled, center: g.input.tiltCalibratedCenter };
+    g.input.tiltGamma = 27.0;
+    const steerRight = g.input.getControls().steer;
+    document.getElementById('settings-tilt-toggle').click(); // restore off for desktop race verification
+    return { afterEnable, steerRight, restoredOff: !g.input.tiltEnabled };
+  })()`);
+  assert(tiltCheck.afterEnable.enabled && tiltCheck.afterEnable.center === 14.5 && tiltCheck.steerRight > 0.4 && tiltCheck.restoredOff,
+    `Settings tilt / calibrate check failed: ${JSON.stringify(tiltCheck)}`);
+  console.log('✓ Settings Tilt Steering toggle & Calibrate button verified');
+
+  // Restore desktop viewport cleanly before full 3-lap races
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await client.send('Emulation.setDeviceMetricsOverride', {
+    width: 1280,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false
+  });
+  await client.eval('window.dispatchEvent(new Event("resize"))');
+
+  client.assertCleanErrors('Phase 5 checks');
+}
+
 async function main() {
   const newTarget = await openNewTab(`${BASE_URL}/?track=coast_route_1&autostart=1`);
   const client = new CDPClient(newTarget.webSocketDebuggerUrl);
@@ -993,6 +1154,8 @@ async function main() {
       await runPhase3Checks(client);
     } else if (PHASE === 4) {
       await runPhase4Checks(client);
+    } else if (PHASE === 5) {
+      await runPhase5Checks(client);
     }
 
     for (let i = 0; i < TRACKS.length; i++) {

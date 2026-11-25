@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { audio } from '../core/Audio.js';
+import { mergeColoredParts } from '../render/GeomMerge.js';
 
 /**
  * Traffic System — Procedural Indian Highway Traffic & Object Pool
@@ -26,23 +27,128 @@ export class Traffic {
 
     // Reusable materials
     this.materials = {
-      rickshawGreen: new THREE.MeshStandardMaterial({ color: 0x1b7a3e, roughness: 0.5 }),
-      rickshawYellow: new THREE.MeshStandardMaterial({ color: 0xf5b018, roughness: 0.4 }),
-      truckCab: new THREE.MeshStandardMaterial({ color: 0xd9381e, roughness: 0.6 }),
-      truckWood: new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.8 }),
-      taxiWhite: new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.3 }),
-      taxiYellow: new THREE.MeshStandardMaterial({ color: 0xf0a500, roughness: 0.4 }),
-      deliveryBlue: new THREE.MeshStandardMaterial({ color: 0x0077b6, roughness: 0.5 }),
-      metalDark: new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.7, roughness: 0.3 }),
-      chrome: new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.9, roughness: 0.2 }),
-      rubber: new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.9 }),
-      glass: new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.1, metalness: 0.5 }),
-      headlight: new THREE.MeshBasicMaterial({ color: 0xfffae0 }),
-      taillight: new THREE.MeshBasicMaterial({ color: 0xff1122 }),
+      body: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.25 }),
       indicator: new THREE.MeshBasicMaterial({ color: 0xffaa00 })
     };
 
+    // Cached merged geometry per vehicle type (reused across all pooled instances -> near-zero memory churn)
+    this.typeTemplates = {};
+    ['rickshaw', 'truck', 'taxi', 'scooter'].forEach(t => {
+      this.typeTemplates[t] = this.buildMergedTemplate(t);
+    });
+
     this.initPool();
+  }
+
+  buildMergedTemplate(type) {
+    const parts = [];
+    let length = 3.6;
+    let width = 1.8;
+    let height = 1.5;
+
+    if (type === 'rickshaw') {
+      length = 2.7;
+      width = 1.35;
+      height = 1.75;
+      const bodyG = new THREE.BoxGeometry(width, 0.7, length * 0.7);
+      const canopyG = new THREE.BoxGeometry(width * 0.95, 0.75, length * 0.85);
+      const frontG = new THREE.CylinderGeometry(0.2, width * 0.5, 0.7, 4);
+      const headG = new THREE.CylinderGeometry(0.12, 0.12, 0.08, 6);
+      const tailG = new THREE.BoxGeometry(0.15, 0.1, 0.05);
+      const wheelG = new THREE.CylinderGeometry(0.24, 0.24, 0.14, 8);
+      parts.push(
+        { geo: bodyG, color: 0x1b7a3e, pos: [0, 0.5, 0.1] },
+        { geo: canopyG, color: 0xf5b018, pos: [0, 1.2, 0.05] },
+        { geo: frontG, color: 0x1b7a3e, pos: [0, 0.5, -length * 0.4], rot: [0, Math.PI / 4, 0] },
+        { geo: headG, color: 0xfffae0, pos: [0, 0.65, -length * 0.52], rot: [Math.PI / 2, 0, 0] },
+        { geo: tailG, color: 0xff2233, pos: [-width * 0.38, 0.6, length * 0.46] },
+        { geo: tailG, color: 0xff2233, pos: [width * 0.38, 0.6, length * 0.46] },
+        { geo: wheelG, color: 0x181818, pos: [0, 0.24, -length * 0.42], rot: [0, 0, Math.PI / 2] },
+        { geo: wheelG, color: 0x181818, pos: [-width * 0.44, 0.24, length * 0.3], rot: [0, 0, Math.PI / 2] },
+        { geo: wheelG, color: 0x181818, pos: [width * 0.44, 0.24, length * 0.3], rot: [0, 0, Math.PI / 2] }
+      );
+      const geo = mergeColoredParts(parts);
+      [bodyG, canopyG, frontG, headG, tailG, wheelG].forEach(g => g.dispose());
+      return { geo, length, width, height };
+    }
+
+    if (type === 'truck') {
+      length = 6.8;
+      width = 2.4;
+      height = 2.9;
+      const chassisG = new THREE.BoxGeometry(width * 0.85, 0.4, length);
+      const cabG = new THREE.BoxGeometry(width, 1.8, length * 0.35);
+      const glassG = new THREE.BoxGeometry(width * 0.9, 0.6, 0.05);
+      const bedG = new THREE.BoxGeometry(width, 1.6, length * 0.62);
+      const hlG = new THREE.BoxGeometry(0.25, 0.2, 0.05);
+      const tlG = new THREE.BoxGeometry(0.3, 0.15, 0.05);
+      const wheelG = new THREE.CylinderGeometry(0.48, 0.48, 0.3, 8);
+      parts.push(
+        { geo: chassisG, color: 0x222222, pos: [0, 0.5, 0] },
+        { geo: cabG, color: 0xd9381e, pos: [0, 1.4, -length * 0.3] },
+        { geo: glassG, color: 0x223344, pos: [0, 1.7, -length * 0.48] },
+        { geo: bedG, color: 0x8b5a2b, pos: [0, 1.5, length * 0.18] }
+      );
+      for (const side of [-1, 1]) {
+        parts.push(
+          { geo: hlG, color: 0xfffae0, pos: [side * 0.85, 0.9, -length * 0.48] },
+          { geo: tlG, color: 0xff2233, pos: [side * 0.9, 0.8, length * 0.49] },
+          { geo: wheelG, color: 0x181818, pos: [side * 1.05, 0.48, -length * 0.32], rot: [0, 0, Math.PI / 2] },
+          { geo: wheelG, color: 0x181818, pos: [side * 1.05, 0.48, length * 0.28], rot: [0, 0, Math.PI / 2] }
+        );
+      }
+      const geo = mergeColoredParts(parts);
+      [chassisG, cabG, glassG, bedG, hlG, tlG, wheelG].forEach(g => g.dispose());
+      return { geo, length, width, height };
+    }
+
+    if (type === 'taxi') {
+      length = 4.3;
+      width = 1.8;
+      height = 1.45;
+      const lowerG = new THREE.BoxGeometry(width, 0.6, length);
+      const cabinG = new THREE.BoxGeometry(width * 0.85, 0.6, length * 0.55);
+      const rackG = new THREE.BoxGeometry(width * 0.75, 0.15, length * 0.35);
+      const lightG = new THREE.BoxGeometry(0.24, 0.14, 0.05);
+      const wheelG = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 8);
+      parts.push(
+        { geo: lowerG, color: 0xf0a500, pos: [0, 0.55, 0] },
+        { geo: cabinG, color: 0xf2f2f2, pos: [0, 1.1, -0.1] },
+        { geo: rackG, color: 0x222222, pos: [0, 1.48, -0.1] }
+      );
+      for (const side of [-1, 1]) {
+        parts.push(
+          { geo: lightG, color: 0xfffae0, pos: [side * 0.65, 0.6, -length * 0.5] },
+          { geo: lightG, color: 0xff2233, pos: [side * 0.65, 0.6, length * 0.5] },
+          { geo: wheelG, color: 0x181818, pos: [side * 0.82, 0.3, -length * 0.32], rot: [0, 0, Math.PI / 2] },
+          { geo: wheelG, color: 0x181818, pos: [side * 0.82, 0.3, length * 0.32], rot: [0, 0, Math.PI / 2] }
+        );
+      }
+      const geo = mergeColoredParts(parts);
+      [lowerG, cabinG, rackG, lightG, wheelG].forEach(g => g.dispose());
+      return { geo, length, width, height };
+    }
+
+    // Scooter / Delivery (1 merged mesh)
+    length = 2.0;
+    width = 0.8;
+    height = 1.2;
+    const bodyG = new THREE.BoxGeometry(width * 0.6, 0.45, length * 0.7);
+    const boxG = new THREE.BoxGeometry(width * 0.9, 0.55, 0.6);
+    const wheelG = new THREE.CylinderGeometry(0.22, 0.22, 0.1, 8);
+    const hlG = new THREE.CylinderGeometry(0.08, 0.08, 0.05, 6);
+    const tlG = new THREE.BoxGeometry(0.12, 0.08, 0.04);
+    parts.push(
+      { geo: bodyG, color: 0x0077b6, pos: [0, 0.45, 0] },
+      { geo: boxG, color: 0x0077b6, pos: [0, 0.85, 0.45] },
+      { geo: wheelG, color: 0x181818, pos: [0, 0.22, -0.65], rot: [0, 0, Math.PI / 2] },
+      { geo: wheelG, color: 0x181818, pos: [0, 0.22, 0.55], rot: [0, 0, Math.PI / 2] },
+      { geo: hlG, color: 0xfffae0, pos: [0, 0.65, -0.75], rot: [Math.PI / 2, 0, 0] },
+      { geo: tlG, color: 0xff2233, pos: [0, 0.6, 0.8] }
+    );
+    const geo = mergeColoredParts(parts);
+    [bodyG, boxG, wheelG, hlG, tlG].forEach(g => g.dispose());
+    return { geo, length, width, height };
   }
 
   initPool() {
@@ -70,226 +176,30 @@ export class Traffic {
 
   createVehicleMesh(type) {
     const group = new THREE.Group();
-    let length = 3.6;
-    let width = 1.8;
-    let height = 1.5;
+    const tmpl = this.typeTemplates[type] || this.typeTemplates.taxi;
+    const bodyMesh = new THREE.Mesh(tmpl.geo, this.materials.body);
+    bodyMesh.castShadow = true;
+    group.add(bodyMesh);
 
-    if (type === 'rickshaw') {
-      length = 2.7;
-      width = 1.35;
-      height = 1.75;
+    const { length, width, height } = tmpl;
 
-      // Lower body (Green)
-      const bodyGeo = new THREE.BoxGeometry(width, 0.7, length * 0.7);
-      const body = new THREE.Mesh(bodyGeo, this.materials.rickshawGreen);
-      body.position.set(0, 0.5, 0.1);
-      body.castShadow = true;
-      group.add(body);
+    // Amber lane-change indicators (merged pair per side)
+    const indG = new THREE.BoxGeometry(0.14, 0.14, 0.18);
+    const indPosGeo = mergeColoredParts([
+      { geo: indG, color: 0xffaa00, pos: [width * 0.46, 0.72, length * 0.49] },
+      { geo: indG, color: 0xffaa00, pos: [width * 0.46, 0.72, -length * 0.49] }
+    ]);
+    const indNegGeo = mergeColoredParts([
+      { geo: indG, color: 0xffaa00, pos: [-width * 0.46, 0.72, length * 0.49] },
+      { geo: indG, color: 0xffaa00, pos: [-width * 0.46, 0.72, -length * 0.49] }
+    ]);
+    indG.dispose();
 
-      // Yellow canopy hood
-      const canopyGeo = new THREE.BoxGeometry(width * 0.95, 0.75, length * 0.85);
-      const canopy = new THREE.Mesh(canopyGeo, this.materials.rickshawYellow);
-      canopy.position.set(0, 1.2, 0.05);
-      canopy.castShadow = true;
-      group.add(canopy);
-
-      // Windshield & Front taper
-      const frontGeo = new THREE.CylinderGeometry(0.2, width * 0.5, 0.7, 4);
-      frontGeo.rotateY(Math.PI / 4);
-      const front = new THREE.Mesh(frontGeo, this.materials.rickshawGreen);
-      front.position.set(0, 0.5, -length * 0.4);
-      group.add(front);
-
-      // Single center headlight
-      const headLGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.08, 12);
-      headLGeo.rotateX(Math.PI / 2);
-      const headL = new THREE.Mesh(headLGeo, this.materials.headlight);
-      headL.position.set(0, 0.65, -length * 0.52);
-      group.add(headL);
-
-      // Dual taillights
-      for (const side of [-1, 1]) {
-        const tailGeo = new THREE.BoxGeometry(0.15, 0.1, 0.05);
-        const tail = new THREE.Mesh(tailGeo, this.materials.taillight);
-        tail.position.set(side * (width * 0.38), 0.6, length * 0.46);
-        group.add(tail);
-      }
-
-      // Wheels (1 front, 2 rear)
-      const wheelGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.14, 12);
-      wheelGeo.rotateZ(Math.PI / 2);
-      const frontW = new THREE.Mesh(wheelGeo, this.materials.rubber);
-      frontW.position.set(0, 0.24, -length * 0.42);
-      group.add(frontW);
-
-      for (const side of [-1, 1]) {
-        const rearW = new THREE.Mesh(wheelGeo, this.materials.rubber);
-        rearW.position.set(side * (width * 0.44), 0.24, length * 0.3);
-        group.add(rearW);
-      }
-    } else if (type === 'truck') {
-      length = 6.8;
-      width = 2.4;
-      height = 2.9;
-
-      // Chassis frame
-      const chassisGeo = new THREE.BoxGeometry(width * 0.85, 0.4, length);
-      const chassis = new THREE.Mesh(chassisGeo, this.materials.metalDark);
-      chassis.position.set(0, 0.5, 0);
-      group.add(chassis);
-
-      // Front colorful cab
-      const cabGeo = new THREE.BoxGeometry(width, 1.8, length * 0.35);
-      const cab = new THREE.Mesh(cabGeo, this.materials.truckCab);
-      cab.position.set(0, 1.4, -length * 0.3);
-      cab.castShadow = true;
-      group.add(cab);
-
-      // Windshield
-      const glassGeo = new THREE.BoxGeometry(width * 0.9, 0.6, 0.05);
-      const glass = new THREE.Mesh(glassGeo, this.materials.glass);
-      glass.position.set(0, 1.7, -length * 0.48);
-      group.add(glass);
-
-      // Wooden cargo bed with decorative side slats
-      const bedGeo = new THREE.BoxGeometry(width, 1.6, length * 0.62);
-      const bed = new THREE.Mesh(bedGeo, this.materials.truckWood);
-      bed.position.set(0, 1.5, length * 0.18);
-      bed.castShadow = true;
-      group.add(bed);
-
-      // Headlights
-      for (const side of [-1, 1]) {
-        const hl = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.2, 0.05), this.materials.headlight);
-        hl.position.set(side * 0.85, 0.9, -length * 0.48);
-        group.add(hl);
-      }
-
-      // Taillights
-      for (const side of [-1, 1]) {
-        const tl = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.15, 0.05), this.materials.taillight);
-        tl.position.set(side * 0.9, 0.8, length * 0.49);
-        group.add(tl);
-      }
-
-      // Heavy wheels (2 front, 4 rear duals)
-      const wheelGeo = new THREE.CylinderGeometry(0.48, 0.48, 0.3, 14);
-      wheelGeo.rotateZ(Math.PI / 2);
-      for (const side of [-1, 1]) {
-        const fw = new THREE.Mesh(wheelGeo, this.materials.rubber);
-        fw.position.set(side * 1.05, 0.48, -length * 0.32);
-        group.add(fw);
-
-        const rw1 = new THREE.Mesh(wheelGeo, this.materials.rubber);
-        rw1.position.set(side * 1.05, 0.48, length * 0.18);
-        group.add(rw1);
-
-        const rw2 = new THREE.Mesh(wheelGeo, this.materials.rubber);
-        rw2.position.set(side * 1.05, 0.48, length * 0.38);
-        group.add(rw2);
-      }
-    } else if (type === 'taxi') {
-      length = 4.3;
-      width = 1.8;
-      height = 1.45;
-
-      // Lower body (Yellow)
-      const lowerGeo = new THREE.BoxGeometry(width, 0.6, length);
-      const lower = new THREE.Mesh(lowerGeo, this.materials.taxiYellow);
-      lower.position.set(0, 0.55, 0);
-      lower.castShadow = true;
-      group.add(lower);
-
-      // Cabin roof (White)
-      const cabinGeo = new THREE.BoxGeometry(width * 0.85, 0.6, length * 0.55);
-      const cabin = new THREE.Mesh(cabinGeo, this.materials.taxiWhite);
-      cabin.position.set(0, 1.1, -0.1);
-      cabin.castShadow = true;
-      group.add(cabin);
-
-      // Luggage roof rack
-      const rackGeo = new THREE.BoxGeometry(width * 0.75, 0.15, length * 0.35);
-      const rack = new THREE.Mesh(rackGeo, this.materials.metalDark);
-      rack.position.set(0, 1.48, -0.1);
-      group.add(rack);
-
-      // Headlights and Taillights
-      for (const side of [-1, 1]) {
-        const hl = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 0.05), this.materials.headlight);
-        hl.position.set(side * 0.65, 0.6, -length * 0.5);
-        group.add(hl);
-
-        const tl = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 0.05), this.materials.taillight);
-        tl.position.set(side * 0.65, 0.6, length * 0.5);
-        group.add(tl);
-      }
-
-      // Wheels
-      const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 14);
-      wheelGeo.rotateZ(Math.PI / 2);
-      for (const side of [-1, 1]) {
-        const fw = new THREE.Mesh(wheelGeo, this.materials.rubber);
-        fw.position.set(side * 0.82, 0.3, -length * 0.32);
-        group.add(fw);
-
-        const rw = new THREE.Mesh(wheelGeo, this.materials.rubber);
-        rw.position.set(side * 0.82, 0.3, length * 0.32);
-        group.add(rw);
-      }
-    } else {
-      // Scooter / Delivery
-      length = 2.0;
-      width = 0.8;
-      height = 1.2;
-
-      const bodyGeo = new THREE.BoxGeometry(width * 0.6, 0.45, length * 0.7);
-      const body = new THREE.Mesh(bodyGeo, this.materials.deliveryBlue);
-      body.position.set(0, 0.45, 0);
-      group.add(body);
-
-      // Blue delivery box
-      const boxGeo = new THREE.BoxGeometry(width * 0.9, 0.55, 0.6);
-      const box = new THREE.Mesh(boxGeo, this.materials.deliveryBlue);
-      box.position.set(0, 0.85, 0.45);
-      group.add(box);
-
-      // Wheels
-      const wheelGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12);
-      wheelGeo.rotateZ(Math.PI / 2);
-      const fw = new THREE.Mesh(wheelGeo, this.materials.rubber);
-      fw.position.set(0, 0.22, -0.65);
-      group.add(fw);
-
-      const rw = new THREE.Mesh(wheelGeo, this.materials.rubber);
-      rw.position.set(0, 0.22, 0.55);
-      group.add(rw);
-
-      // Headlight & Taillight
-      const hl = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.05, 8), this.materials.headlight);
-      hl.rotateX(Math.PI / 2);
-      hl.position.set(0, 0.65, -0.75);
-      group.add(hl);
-
-      const tl = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.04), this.materials.taillight);
-      tl.position.set(0, 0.6, 0.8);
-      group.add(tl);
-    }
-
-    // Amber lane-change indicators (mounted rear + front left/right corners)
-    const indGeo = new THREE.BoxGeometry(0.14, 0.14, 0.18);
-    const makePair = (xSign) => {
-      const pair = new THREE.Group();
-      const rearInd = new THREE.Mesh(indGeo, this.materials.indicator);
-      rearInd.position.set(xSign * (width * 0.46), 0.72, length * 0.49);
-      const frontInd = new THREE.Mesh(indGeo, this.materials.indicator);
-      frontInd.position.set(xSign * (width * 0.46), 0.72, -length * 0.49);
-      pair.add(rearInd, frontInd);
-      pair.visible = false;
-      group.add(pair);
-      return pair;
-    };
-    const posXIndicator = makePair(1);
-    const negXIndicator = makePair(-1);
+    const posXIndicator = new THREE.Mesh(indPosGeo, this.materials.indicator);
+    const negXIndicator = new THREE.Mesh(indNegGeo, this.materials.indicator);
+    posXIndicator.visible = false;
+    negXIndicator.visible = false;
+    group.add(posXIndicator, negXIndicator);
 
     return {
       group,

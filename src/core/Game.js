@@ -63,6 +63,9 @@ export class Game {
     this.replayReadIdx = 0;
     this.replayTime = 0;
 
+    this.effectiveQuality = 'high';
+    this.autoQualityState = { active: false, resolved: false, resolvedPreset: 'high', elapsed: 0, frames: 0, lastFrameMs: 0 };
+
     this.initScene();
     this.initUI();
     this.initVisibilityPause();
@@ -95,14 +98,44 @@ export class Game {
     this.input = new Input();
 
     const settings = save.getSettings();
-    if (settings.quality && settings.quality !== 'auto') {
-      this.renderer.setQuality(settings.quality);
-    }
+    this.configureQualitySetting(settings.quality || 'auto');
     if (settings.cameraView && this.cameraRig.modes.includes(settings.cameraView)) {
       this.cameraRig.modeIndex = this.cameraRig.modes.indexOf(settings.cameraView);
       this.cameraRig.mode = settings.cameraView;
     }
     this.input.tiltEnabled = !!settings.tiltEnabled;
+    this.input.mobileMode = settings.tiltEnabled ? 'tilt' : 'buttons';
+  }
+
+  applyQualityPreset(preset) {
+    const p = preset === 'med' ? 'medium' : (preset || 'high');
+    this.effectiveQuality = p;
+    this.renderer?.setQuality(p);
+    this.scenery?.applyQuality(p);
+  }
+
+  configureQualitySetting(q) {
+    if (q === 'auto') {
+      this.autoQualityState = { active: true, resolved: false, resolvedPreset: 'high', elapsed: 0, frames: 0, lastFrameMs: 0 };
+      this.applyQualityPreset('high');
+    } else {
+      this.autoQualityState = { active: false, resolved: false, resolvedPreset: q, elapsed: 0, frames: 0, lastFrameMs: 0 };
+      this.applyQualityPreset(q);
+    }
+  }
+
+  recordAutoQualitySample(dtMs) {
+    const aq = this.autoQualityState;
+    if (!aq || !aq.active || aq.resolved) return;
+    aq.elapsed += dtMs / 1000;
+    aq.frames += 1;
+    if (aq.elapsed >= 3.0 && aq.frames >= 15) {
+      const avgMs = (aq.elapsed * 1000) / aq.frames;
+      const chosen = avgMs <= 19.5 ? 'high' : (avgMs <= 28.0 ? 'medium' : 'low');
+      aq.resolved = true;
+      aq.resolvedPreset = chosen;
+      this.applyQualityPreset(chosen);
+    }
   }
 
   initUI() {
@@ -127,9 +160,7 @@ export class Game {
       onMuteSync: (muted) => {
         this.hud.syncMuteState(muted);
       },
-      onQualityChange: (q) => {
-        if (q !== 'auto') this.renderer.setQuality(q);
-      },
+      onQualityChange: (q) => this.configureQualitySetting(q),
       onCameraChange: (c) => {
         if (this.cameraRig.modes.includes(c)) {
           this.cameraRig.modeIndex = this.cameraRig.modes.indexOf(c);
@@ -139,7 +170,9 @@ export class Game {
       onTiltChange: (enabled, calibrateNow) => {
         this.input.tiltEnabled = !!enabled;
         this.input.mobileMode = enabled ? 'tilt' : 'buttons';
+        if (enabled) this.input.requestOrientationPermission();
         if (calibrateNow) this.input.calibrateTilt();
+        document.body.classList.toggle('tilt-steering', !!enabled);
       }
     });
 
@@ -185,6 +218,38 @@ export class Game {
     `;
     this.container.appendChild(this.replayBanner);
     this.replayBanner.querySelector('#replay-exit-btn').onclick = () => this.exitReplay();
+
+    // Portrait Rotate Device Overlay
+    this.rotateOverlayEl = document.createElement('div');
+    this.rotateOverlayEl.id = 'rotate-device-overlay';
+    this.rotateOverlayEl.className = 'rotate-overlay hidden';
+    this.rotateOverlayEl.innerHTML = `
+      <div class="rotate-card">
+        <div class="rotate-icon">📱↻</div>
+        <div class="rotate-title">ROTATE YOUR DEVICE</div>
+        <div class="rotate-sub">GHAT RUSH is built for landscape racing. Turn your device sideways to hit the highway.</div>
+      </div>
+    `;
+    this.container.appendChild(this.rotateOverlayEl);
+
+    this.updateViewportAndTouchState = () => {
+      const isTouch = ('ontouchstart' in window)
+        || (navigator.maxTouchPoints > 0)
+        || !!window.matchMedia?.('(pointer: coarse)')?.matches;
+      document.body.classList.toggle('touch-device', isTouch);
+      document.body.classList.toggle('tilt-steering', !!this.input?.tiltEnabled);
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const isPortrait = h > w && (isTouch || w <= 900);
+      this.rotateOverlayEl?.classList.toggle('hidden', !isPortrait);
+      if (isPortrait && (this.state === 'RACING' || this.state === 'COUNTDOWN')) {
+        this.pauseGame();
+      }
+    };
+    window.addEventListener('resize', this.updateViewportAndTouchState);
+    window.addEventListener('orientationchange', this.updateViewportAndTouchState);
+    this.updateViewportAndTouchState();
 
     // Audio unlock listener on first user interaction
     const unlockAudio = () => {
@@ -250,6 +315,7 @@ export class Game {
     this.scene.add(this.roadMesh);
 
     this.scenery = new Scenery(this.scene, this.spline, trackConfig);
+    this.scenery.applyQuality(this.effectiveQuality || 'high');
     const surfaceGrip = this.scenery.getSurfaceGrip();
 
     // Player bike
@@ -295,6 +361,7 @@ export class Game {
       this.restartRace();
     } else {
       this.cameraRig.reset(this.playerBike);
+      this.scenery.update(0, 0, this.cameraRig.camera);
       this.hud.setTrackSpline(this.spline);
       this.hud.setObjectives([]);
     }
@@ -400,7 +467,7 @@ export class Game {
           .add(new THREE.Vector3(0, 1.5, 0));
         this.cameraRig.camera.position.copy(camPos);
         this.cameraRig.camera.lookAt(lookPt);
-        this.scenery?.update(dt, this.totalTime);
+        this.scenery?.update(dt, this.totalTime, this.cameraRig.camera);
         this.sky?.update({ group: { position: camPos } }, dt);
       }
       return;
@@ -426,7 +493,7 @@ export class Game {
 
     this.totalTime += dt;
     if (this.scenery) {
-      this.scenery.update(dt, this.totalTime);
+      this.scenery.update(dt, this.totalTime, this.cameraRig.camera);
     }
 
     // Camera mode toggle hotkey (C)
@@ -579,6 +646,16 @@ export class Game {
   }
 
   render(alpha, currentTime) {
+    if (this.autoQualityState?.active && !this.autoQualityState.resolved && this.state !== 'PAUSED' && this.state !== 'GARAGE') {
+      const nowMs = typeof currentTime === 'number' ? currentTime : performance.now();
+      if (this.autoQualityState.lastFrameMs > 0) {
+        const dtMs = nowMs - this.autoQualityState.lastFrameMs;
+        if (dtMs > 1 && dtMs <= 200 && (!this.loop || this.loop.isRunning)) {
+          this.recordAutoQualitySample(dtMs);
+        }
+      }
+      this.autoQualityState.lastFrameMs = nowMs;
+    }
     if (this.state === 'GARAGE' && this.menuSystem?.garageScene && this.menuSystem?.garageCamera) {
       this.renderer.render(this.menuSystem.garageScene, this.menuSystem.garageCamera);
     } else {
@@ -727,6 +804,7 @@ export class Game {
     this.traffic.reset();
     this.rivalAI.reset();
     this.cameraRig.reset(this.playerBike);
+    this.scenery?.update(0, 0, this.cameraRig.camera);
 
     if (this.sessionConfig.mode === 'career' && this.objectiveTracker) {
       const labels = this.sessionConfig.careerRace?.starsTarget || [];

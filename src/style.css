@@ -377,10 +377,66 @@ html, body {
   z-index: 15;
 }
 
+body.touch-device #touch-controls {
+  display: block;
+}
+
+body.touch-device #hud-bottom-left {
+  bottom: 108px;
+}
+
 @media (pointer: coarse), (max-width: 900px) {
   #touch-controls {
     display: block;
   }
+  #hud-bottom-left {
+    bottom: 108px;
+  }
+}
+
+.rotate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: rgba(2, 6, 23, 0.95);
+  backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+}
+
+.rotate-overlay.hidden {
+  display: none;
+}
+
+.rotate-card {
+  max-width: 340px;
+  padding: 28px 24px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 2px solid rgba(245, 158, 11, 0.55);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.75);
+}
+
+.rotate-icon {
+  font-size: 46px;
+  margin-bottom: 12px;
+}
+
+.rotate-title {
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #f8fafc;
+  margin-bottom: 8px;
+}
+
+.rotate-sub {
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.5;
 }
 
 #touch-left-zone {

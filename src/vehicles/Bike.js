@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { Rider } from './Rider.js';
 import { audio } from '../core/Audio.js';
+import { mergeColoredParts, mergePlainParts } from '../render/GeomMerge.js';
+
+// Shared static resources across AI rivals to minimize draw calls & shader switches
+let SHARED_RIVAL_PAINT_MAT = null;
+let SHARED_RIVAL_DETAIL_MAT = null;
+let SHARED_RIVAL_WHEEL_MAT = null;
+let SHARED_RIVAL_TAILLIGHT_MAT = null;
+let SHARED_BIKE_FLAME_GEO = null;
+let SHARED_BIKE_FLAME_MAT = null;
 
 /**
  * Bike Entity — 3D Motorcycle Model & Road-Space Arcade Physics
@@ -94,208 +103,167 @@ export class Bike {
   }
 
   initModel() {
-    const paintMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(this.paintColor),
-      roughness: 0.22,
-      metalness: 0.65
-    });
-    this.paintMat = paintMat;
+    if (!SHARED_RIVAL_PAINT_MAT) {
+      SHARED_RIVAL_PAINT_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.22, metalness: 0.65 });
+    }
+    if (!SHARED_RIVAL_DETAIL_MAT) {
+      SHARED_RIVAL_DETAIL_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.78 });
+    }
+    if (!SHARED_RIVAL_WHEEL_MAT) {
+      SHARED_RIVAL_WHEEL_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.2 });
+    }
+    if (!SHARED_RIVAL_TAILLIGHT_MAT) {
+      SHARED_RIVAL_TAILLIGHT_MAT = new THREE.MeshBasicMaterial({ color: 0xff1744 });
+    }
+    if (!SHARED_BIKE_FLAME_GEO) {
+      SHARED_BIKE_FLAME_GEO = new THREE.ConeGeometry(0.09, 0.75, 5);
+      SHARED_BIKE_FLAME_GEO.rotateX(Math.PI / 2);
+      SHARED_BIKE_FLAME_MAT = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
+    }
 
-    const darkMetalMat = new THREE.MeshStandardMaterial({
-      color: 0x1f232b,
-      roughness: 0.45,
-      metalness: 0.85
-    });
+    this.paintMat = this.isPlayer
+      ? new THREE.MeshStandardMaterial({
+          color: new THREE.Color(this.paintColor),
+          roughness: 0.22,
+          metalness: 0.65
+        })
+      : null;
 
-    const rubberMat = new THREE.MeshStandardMaterial({
-      color: 0x161719,
-      roughness: 0.90
-    });
+    const detailMat = this.isPlayer
+      ? new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.78 })
+      : SHARED_RIVAL_DETAIL_MAT;
 
-    const chromeMat = new THREE.MeshStandardMaterial({
-      color: 0xdde4ed,
-      roughness: 0.12,
-      metalness: 0.95
-    });
+    const wheelMat = this.isPlayer
+      ? new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.2 })
+      : SHARED_RIVAL_WHEEL_MAT;
 
-    const goldForkMat = new THREE.MeshStandardMaterial({
-      color: 0xd4af37, // Anodized gold inverted forks
-      roughness: 0.25,
-      metalness: 0.85
-    });
+    this.brakeDiscMat = this.isPlayer
+      ? new THREE.MeshStandardMaterial({
+          color: 0xaaaaaa,
+          roughness: 0.35,
+          metalness: 0.90,
+          emissive: new THREE.Color(0x000000),
+          emissiveIntensity: 0
+        })
+      : null;
 
-    const titaniumMat = new THREE.MeshStandardMaterial({
-      color: 0x4876a8, // Blue/purple heat-tinted titanium exhaust
-      roughness: 0.25,
-      metalness: 0.88
-    });
-
-    this.brakeDiscMat = new THREE.MeshStandardMaterial({
-      color: 0xaaaaaa,
-      roughness: 0.35,
-      metalness: 0.90,
-      emissive: new THREE.Color(0x000000),
-      emissiveIntensity: 0
-    });
-
-    // 1. Aerodynamic Main Fairing & Fuel Tank
-    const fairingGeo = new THREE.BoxGeometry(0.50, 0.54, 1.40);
-    this.bodyMesh = new THREE.Mesh(fairingGeo, paintMat);
-    this.bodyMesh.position.set(0, 0.64, 0.05);
+    // 1. Merged Paintable Bodywork (Fairing + Tank + Front Nose) -> 1 draw call
+    const fairingG = new THREE.BoxGeometry(0.50, 0.54, 1.40);
+    const noseG = new THREE.ConeGeometry(0.26, 0.70, 5);
+    const bodyParts = [
+      { geo: fairingG, color: this.paintColor, pos: [0, 0.64, 0.05] },
+      { geo: noseG, color: this.paintColor, pos: [0, 0.78, 0.88], rot: [-Math.PI / 2.3, 0, 0] }
+    ];
+    const bodyGeo = this.isPlayer ? mergePlainParts(bodyParts) : mergeColoredParts(bodyParts);
+    fairingG.dispose();
+    noseG.dispose();
+    this.bodyMesh = new THREE.Mesh(bodyGeo, this.isPlayer ? this.paintMat : SHARED_RIVAL_PAINT_MAT);
     this.bodyMesh.castShadow = true;
     this.bikeMesh.add(this.bodyMesh);
 
-    // Front Nose Fairing & Windscreen
-    const noseGeo = new THREE.ConeGeometry(0.26, 0.70, 5);
-    const nose = new THREE.Mesh(noseGeo, paintMat);
-    nose.rotation.x = -Math.PI / 2.3;
-    nose.position.set(0, 0.78, 0.88);
-    nose.castShadow = true;
-    this.bikeMesh.add(nose);
+    // 2. Merged Hardware / Chassis Details (Windscreen, Lights, Plate, Forks, Bars, Mirrors, Exhausts) -> 1 draw call
+    const screenG = new THREE.BoxGeometry(0.32, 0.26, 0.04);
+    const hlG = new THREE.BoxGeometry(0.12, 0.06, 0.06);
+    const plateG = new THREE.BoxGeometry(0.18, 0.14, 0.02);
+    const calG = new THREE.BoxGeometry(0.08, 0.12, 0.10);
+    const forkG = new THREE.CylinderGeometry(0.032, 0.032, 0.78, 6);
+    const stanchG = new THREE.CylinderGeometry(0.024, 0.024, 0.40, 6);
+    const barG = new THREE.CylinderGeometry(0.018, 0.018, 0.62, 6);
+    const stemG = new THREE.CylinderGeometry(0.01, 0.01, 0.16, 4);
+    const mirrorG = new THREE.BoxGeometry(0.10, 0.06, 0.03);
+    const exhG = new THREE.CylinderGeometry(0.05, 0.065, 0.48, 6);
 
-    // Smoked Windscreen
-    const screenGeo = new THREE.BoxGeometry(0.32, 0.26, 0.04);
-    const screenMat = new THREE.MeshStandardMaterial({
-      color: 0x112233,
-      roughness: 0.1,
-      metalness: 0.85,
-      transparent: true,
-      opacity: 0.85
-    });
-    const windscreen = new THREE.Mesh(screenGeo, screenMat);
-    windscreen.rotation.x = -Math.PI / 3.0;
-    windscreen.position.set(0, 0.94, 0.72);
-    this.bikeMesh.add(windscreen);
+    const detailGeo = mergeColoredParts([
+      { geo: screenG, color: 0x112233, pos: [0, 0.94, 0.72], rot: [-Math.PI / 3.0, 0, 0] },
+      { geo: hlG, color: 0xffffff, pos: [-0.13, 0.74, 1.20] },
+      { geo: hlG, color: 0xffffff, pos: [0.13, 0.74, 1.20] },
+      { geo: plateG, color: 0xffffff, pos: [0, 0.82, 1.05], rot: [-Math.PI / 4, 0, 0] },
+      { geo: calG, color: 0xd4af37, pos: [0.10, 0.38, 0.86] },
+      { geo: forkG, color: 0xd4af37, pos: [-0.14, 0.64, 0.88], rot: [-0.32, 0, 0] },
+      { geo: forkG, color: 0xd4af37, pos: [0.14, 0.64, 0.88], rot: [-0.32, 0, 0] },
+      { geo: stanchG, color: 0xdde4ed, pos: [-0.14, 0.44, 0.94], rot: [-0.32, 0, 0] },
+      { geo: stanchG, color: 0xdde4ed, pos: [0.14, 0.44, 0.94], rot: [-0.32, 0, 0] },
+      { geo: barG, color: 0x1f232b, pos: [0, 0.90, 0.65], rot: [0, 0, Math.PI / 2] },
+      { geo: stemG, color: 0x1f232b, pos: [-0.30, 0.94, 0.68], rot: [0, 0, -0.45] },
+      { geo: stemG, color: 0x1f232b, pos: [0.30, 0.94, 0.68], rot: [0, 0, 0.45] },
+      { geo: mirrorG, color: 0x1f232b, pos: [-0.36, 1.00, 0.68] },
+      { geo: mirrorG, color: 0x1f232b, pos: [0.36, 1.00, 0.68] },
+      { geo: exhG, color: 0x4876a8, pos: [-0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] },
+      { geo: exhG, color: 0x4876a8, pos: [0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] }
+    ]);
+    [screenG, hlG, plateG, calG, forkG, stanchG, barG, stemG, mirrorG, exhG].forEach(g => g.dispose());
+    this.bikeMesh.add(new THREE.Mesh(detailGeo, detailMat));
 
-    // Twin Projector LED Headlights
-    const lightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const hl1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.06), lightMat);
-    hl1.position.set(-0.13, 0.74, 1.20);
-    const hl2 = hl1.clone();
-    hl2.position.set(0.13, 0.74, 1.20);
-    this.bikeMesh.add(hl1, hl2);
-
-    // Radiant Glowing LED Taillight Bar (concept_coast.png)
-    this.tailLightMat = new THREE.MeshBasicMaterial({ color: 0xff1744 });
-    this.tailLight = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.09, 0.06), this.tailLightMat);
+    // Taillight bar
+    this.tailLightMat = this.isPlayer ? new THREE.MeshBasicMaterial({ color: 0xff1744 }) : null;
+    this.tailLight = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.09, 0.06),
+      this.isPlayer ? this.tailLightMat : SHARED_RIVAL_TAILLIGHT_MAT
+    );
     this.tailLight.position.set(0, 0.76, -0.76);
-    const innerLight = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.07), new THREE.MeshBasicMaterial({ color: 0xffebee }));
-    this.tailLight.add(innerLight);
     this.bikeMesh.add(this.tailLight);
 
-    // Number Board Decal ("27" racing board)
-    const plateGeo = new THREE.BoxGeometry(0.18, 0.14, 0.02);
-    const plateMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const numberPlate = new THREE.Mesh(plateGeo, plateMat);
-    numberPlate.position.set(0, 0.82, 1.05);
-    numberPlate.rotation.x = -Math.PI / 4;
-    this.bikeMesh.add(numberPlate);
+    // 3. Merged Wheels (Tyre + Alloy Rim -> 1 draw call per wheel)
+    const tireG = new THREE.CylinderGeometry(0.32, 0.32, 0.16, 12);
+    const rimG = new THREE.CylinderGeometry(0.22, 0.22, 0.17, 8);
+    const wheelGeo = mergeColoredParts([
+      { geo: tireG, color: 0x161719, rot: [0, 0, Math.PI / 2] },
+      { geo: rimG, color: 0x22262e, rot: [0, 0, Math.PI / 2] }
+    ]);
+    tireG.dispose();
+    rimG.dispose();
 
-    // 2. Wheels (Alloy Rims + Rubber Tyres + Brake Discs)
-    const tireGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.16, 18);
-    tireGeo.rotateZ(Math.PI / 2);
-
-    this.frontWheel = new THREE.Mesh(tireGeo, rubberMat);
+    this.frontWheel = new THREE.Mesh(wheelGeo, wheelMat);
     this.frontWheel.position.set(0, 0.32, 0.95);
-    this.frontWheel.castShadow = true;
+    this.frontWheel.castShadow = this.isPlayer;
     this.bikeMesh.add(this.frontWheel);
 
-    this.rearWheel = new THREE.Mesh(tireGeo, rubberMat);
+    this.rearWheel = new THREE.Mesh(wheelGeo, wheelMat);
     this.rearWheel.position.set(0, 0.32, -0.75);
-    this.rearWheel.castShadow = true;
+    this.rearWheel.castShadow = this.isPlayer;
     this.bikeMesh.add(this.rearWheel);
 
-    // Lightweight 5-Spoke Wheel Rims
-    const rimMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.2 });
-    const rimGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.17, 10);
-    rimGeo.rotateZ(Math.PI / 2);
-    this.frontWheel.add(new THREE.Mesh(rimGeo, rimMat));
-    this.rearWheel.add(new THREE.Mesh(rimGeo, rimMat));
-
-    // Perforated Brake Discs with Heat Glow
-    const discGeo = new THREE.CylinderGeometry(0.20, 0.20, 0.19, 14);
-    discGeo.rotateZ(Math.PI / 2);
-    this.frontDisc = new THREE.Mesh(discGeo, this.brakeDiscMat);
-    this.frontWheel.add(this.frontDisc);
-
-    // Gold Brake Calipers
-    const caliperMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.8, roughness: 0.3 });
-    const caliper = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.10), caliperMat);
-    caliper.position.set(0.10, 0.38, 0.86);
-    this.bikeMesh.add(caliper);
-
-    // 3. Inverted Front Forks & Triple Clamp
-    const forkGeo = new THREE.CylinderGeometry(0.032, 0.032, 0.78, 8);
-    const forkL = new THREE.Mesh(forkGeo, goldForkMat);
-    forkL.position.set(-0.14, 0.64, 0.88);
-    forkL.rotation.x = -0.32;
-    const forkR = forkL.clone();
-    forkR.position.x = 0.14;
-    this.bikeMesh.add(forkL, forkR);
-
-    // Chrome Inner Fork Stanchions
-    const stanchionGeo = new THREE.CylinderGeometry(0.024, 0.024, 0.40, 8);
-    const stanchL = new THREE.Mesh(stanchionGeo, chromeMat);
-    stanchL.position.set(-0.14, 0.44, 0.94);
-    stanchL.rotation.x = -0.32;
-    const stanchR = stanchL.clone();
-    stanchR.position.x = 0.14;
-    this.bikeMesh.add(stanchL, stanchR);
-
-    // Clip-On Handlebars with Levers & Rear-View Mirrors
-    const barGeo = new THREE.CylinderGeometry(0.018, 0.018, 0.62, 8);
-    barGeo.rotateZ(Math.PI / 2);
-    const handlebars = new THREE.Mesh(barGeo, darkMetalMat);
-    handlebars.position.set(0, 0.90, 0.65);
-    this.bikeMesh.add(handlebars);
-
-    // Aerodynamic Rear-View Mirrors
-    for (const side of [-1, 1]) {
-      const mirrorStem = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.16, 4), darkMetalMat);
-      mirrorStem.position.set(side * 0.30, 0.94, 0.68);
-      mirrorStem.rotation.z = side * 0.45;
-      this.bikeMesh.add(mirrorStem);
-
-      const mirrorHousing = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.06, 0.03), darkMetalMat);
-      mirrorHousing.position.set(side * 0.36, 1.00, 0.68);
-      this.bikeMesh.add(mirrorHousing);
+    if (this.isPlayer) {
+      const discGeo = new THREE.CylinderGeometry(0.20, 0.20, 0.19, 10);
+      discGeo.rotateZ(Math.PI / 2);
+      this.frontDisc = new THREE.Mesh(discGeo, this.brakeDiscMat);
+      this.frontWheel.add(this.frontDisc);
     }
 
-    // 4. Titanium Under-Seat Exhausts with Heat-Tint & Nitro Flame Jets
-    const exhaustGeo = new THREE.CylinderGeometry(0.05, 0.065, 0.48, 8);
-    exhaustGeo.rotateX(Math.PI / 2);
-    const exL = new THREE.Mesh(exhaustGeo, titaniumMat);
-    exL.position.set(-0.15, 0.52, -0.74);
-    const exR = exL.clone();
-    exR.position.x = 0.15;
-    this.bikeMesh.add(exL, exR);
-
-    // Nitro flame jets (cyan + orange core)
-    const flameMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
-    this.flameL = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.75, 5), flameMat);
-    this.flameL.rotation.x = Math.PI / 2;
+    // 4. Nitro flame jets (hidden unless isNitro)
+    this.flameL = new THREE.Mesh(SHARED_BIKE_FLAME_GEO, SHARED_BIKE_FLAME_MAT);
     this.flameL.position.set(-0.15, 0.52, -1.15);
     this.flameL.visible = false;
 
-    this.flameR = this.flameL.clone();
-    this.flameR.position.x = 0.15;
+    this.flameR = new THREE.Mesh(SHARED_BIKE_FLAME_GEO, SHARED_BIKE_FLAME_MAT);
+    this.flameR.position.set(0.15, 0.52, -1.15);
+    this.flameR.visible = false;
     this.bikeMesh.add(this.flameL, this.flameR);
 
-    // 5. Rider Model (Articulated team racing suit + aerodynamic helmet)
-    this.rider = new Rider(this.paintColor, '#ffffff');
+    // 5. Rider Model (Merged limbs; rivals share suit vertex-color material)
+    this.rider = new Rider(this.paintColor, '#ffffff', !this.isPlayer);
     this.bikeMesh.add(this.rider.group);
 
-    // Cache material references once so ghost mode never mutates child.material.transparent every frame
+    // Cache unique per-bike material references for ghost fading
+    const sharedSet = new Set([
+      SHARED_RIVAL_PAINT_MAT,
+      SHARED_RIVAL_DETAIL_MAT,
+      SHARED_RIVAL_WHEEL_MAT,
+      SHARED_RIVAL_TAILLIGHT_MAT,
+      SHARED_BIKE_FLAME_MAT
+    ]);
     this.ghostMaterials = [];
     const seenMats = new Set();
     this.bikeMesh.traverse(child => {
-      if (child.isMesh && child.material && !seenMats.has(child.material)) {
+      if (child.isMesh && child.material && !seenMats.has(child.material) && !sharedSet.has(child.material) && !child.material._isSharedRider) {
         seenMats.add(child.material);
-        this.ghostMaterials.push({
-          mat: child.material,
-          baseTransparent: !!child.material.transparent,
-          baseOpacity: child.material.opacity !== undefined ? child.material.opacity : 1.0
-        });
+        if (this.isPlayer || child.material === this.paintMat || child.material === this.tailLightMat) {
+          this.ghostMaterials.push({
+            mat: child.material,
+            baseTransparent: !!child.material.transparent,
+            baseOpacity: child.material.opacity !== undefined ? child.material.opacity : 1.0
+          });
+        }
       }
     });
   }
@@ -414,7 +382,9 @@ export class Bike {
     }
 
     // Tail light brightness on brake
-    this.tailLightMat.color.setHex(controls.brake > 0 ? 0xff0022 : 0xaa1111);
+    if (this.tailLightMat) {
+      this.tailLightMat.color.setHex(controls.brake > 0 ? 0xff0022 : 0xaa1111);
+    }
 
     // Brake disc heating glow
     if (controls.brake > 0.4 && this.speed > 18) {
@@ -422,8 +392,10 @@ export class Bike {
     } else {
       this.brakeGlow = Math.max(0, this.brakeGlow - 1.5 * dt);
     }
-    this.brakeDiscMat.emissive.setHex(0xff3300);
-    this.brakeDiscMat.emissiveIntensity = this.brakeGlow * 1.8;
+    if (this.brakeDiscMat) {
+      this.brakeDiscMat.emissive.setHex(0xff3300);
+      this.brakeDiscMat.emissiveIntensity = this.brakeGlow * 1.8;
+    }
 
     const aeroDrag = 0.0018 * (this.speed * this.speed);
     const netAccel = forwardAccel - brakeDecel - aeroDrag;
@@ -817,24 +789,43 @@ export class Bike {
     if (this.paintMat) {
       this.paintMat.color.set(hex);
     }
+    const colorAttr = this.bodyMesh?.geometry?.getAttribute('color');
+    if (colorAttr) {
+      const col = new THREE.Color(hex);
+      for (let i = 0; i < colorAttr.count; i++) {
+        colorAttr.setXYZ(i, col.r, col.g, col.b);
+      }
+      colorAttr.needsUpdate = true;
+    }
   }
 
   dispose() {
     if (this.scene && this.group) {
       this.scene.remove(this.group);
     }
+    const sharedMats = new Set([
+      SHARED_RIVAL_PAINT_MAT,
+      SHARED_RIVAL_DETAIL_MAT,
+      SHARED_RIVAL_WHEEL_MAT,
+      SHARED_RIVAL_TAILLIGHT_MAT,
+      SHARED_BIKE_FLAME_MAT
+    ]);
+    const sharedGeos = new Set([SHARED_BIKE_FLAME_GEO]);
     const disposedGeos = new Set();
     const disposedMats = new Set();
     this.group?.traverse((child) => {
-      if (child.geometry && !disposedGeos.has(child.geometry)) {
+      if (child.geometry && !disposedGeos.has(child.geometry) && !sharedGeos.has(child.geometry)) {
         disposedGeos.add(child.geometry);
         child.geometry.dispose();
       }
-      if (child.material && !disposedMats.has(child.material)) {
+      if (child.material && !disposedMats.has(child.material) && !sharedMats.has(child.material) && child.material !== this.rider?.material) {
         disposedMats.add(child.material);
         child.material.dispose();
       }
     });
+    if (this.rider && !this.rider.shareMaterial) {
+      this.rider.material?.dispose();
+    }
   }
 
   syncTransform() {

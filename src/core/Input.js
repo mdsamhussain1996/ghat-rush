@@ -85,11 +85,19 @@ export class InputSystem {
     // Touch event listeners will bind to UI touch zones created in HUD
   }
 
+  requestOrientationPermission() {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().catch(() => {});
+    }
+  }
+
   initOrientation() {
     if (window.DeviceOrientationEvent) {
       window.addEventListener('deviceorientation', (e) => {
-        if (e.gamma !== null) {
-          // In landscape mode, gamma or beta handles steering depending on orientation
+        const angle = window.screen?.orientation?.angle ?? window.orientation ?? 0;
+        if ((angle === 90 || angle === -90 || angle === 270) && e.beta !== null && e.beta !== undefined) {
+          this.tiltGamma = angle === 90 ? e.beta : -e.beta;
+        } else if (e.gamma !== null && e.gamma !== undefined) {
           this.tiltGamma = e.gamma;
         }
       }, true);

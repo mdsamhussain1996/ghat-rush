@@ -45,17 +45,20 @@ export class Renderer {
   }
 
   setQuality(preset) {
-    this.quality = preset;
-    if (preset === 'low') {
+    const p = preset === 'med' ? 'medium' : preset;
+    this.quality = p || 'high';
+    if (p === 'low') {
       this.threeRenderer.setPixelRatio(1.0);
       this.threeRenderer.shadowMap.enabled = false;
-    } else if (preset === 'med') {
-      this.threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+    } else if (p === 'medium') {
+      this.threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35));
       this.threeRenderer.shadowMap.enabled = true;
     } else {
-      this.threeRenderer.setPixelRatio(this.dpr);
+      this.quality = 'high';
+      this.threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
       this.threeRenderer.shadowMap.enabled = true;
     }
+    this.threeRenderer.shadowMap.needsUpdate = true;
   }
 
   render(scene, camera) {

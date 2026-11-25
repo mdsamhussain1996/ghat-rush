@@ -11,7 +11,7 @@ export class TrackBuilder {
     this.roadWidth = this.trackData.roadWidth || 14;
     this.lanes = Math.max(2, this.trackData.lanes || 3);
     this.envType = this.trackData.environment || 'coastal';
-    this.stepMeters = 4.0;
+    this.stepMeters = 6.0;
     this.mesh = null;
   }
 

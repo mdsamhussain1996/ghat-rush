@@ -4,7 +4,7 @@
  * - Current FPS & 1% low FPS
  * - Frame time in ms
  * - Draw calls (budget <= 180)
- * - Triangles (budget <= 400k)
+ * - Triangles (budget <= 60k)
  * - Quality preset (Low / Medium / High)
  * - Memory usage
  */
@@ -69,7 +69,7 @@ export class F3Overlay {
           <div class="f3-row"><span class="f3-lbl">FPS:</span> <span class="f3-val ${this.fps >= 58 ? 'perf-good' : 'perf-warn'}">${this.fps} FPS</span> (1% Low: ${onePercentLow})</div>
           <div class="f3-row"><span class="f3-lbl">Frame Time:</span> <span class="f3-val">${this.frameTimeMs} ms</span></div>
           <div class="f3-row"><span class="f3-lbl">Draw Calls:</span> <span class="f3-val ${stats.drawCalls <= 180 ? 'perf-good' : 'perf-bad'}">${stats.drawCalls} / 180</span></div>
-          <div class="f3-row"><span class="f3-lbl">Triangles:</span> <span class="f3-val">${stats.triangles.toLocaleString()} / 400k</span></div>
+          <div class="f3-row"><span class="f3-lbl">Triangles:</span> <span class="f3-val ${stats.triangles <= 60000 ? 'perf-good' : 'perf-bad'}">${stats.triangles.toLocaleString()} / 60k</span></div>
           <div class="f3-row"><span class="f3-lbl">Quality Preset:</span> <span class="f3-val">${this.renderer.quality.toUpperCase()}</span></div>
           <div class="f3-row"><span class="f3-lbl">JS Heap:</span> <span class="f3-val">${mem}</span></div>
         `;

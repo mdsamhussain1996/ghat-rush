@@ -205,5 +205,9 @@ export class CameraRig {
     this.currentLookAt.set(0, 0, 0);
     this.crashShakeTimer = 0;
     this.replayCutIndex = -1;
+    if (this.spline) {
+      this.update(1 / 60, playerBike);
+      this.camera.updateMatrixWorld(true);
+    }
   }
 }
