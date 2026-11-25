@@ -50,7 +50,7 @@
     "class": "Super 1000",
     "tier": "A",
     "price": 125000,
-    "unlocked": true,
+    "unlocked": false,
     "topSpeedKmh": 290,
     "accelMs": 2.8,
     "handling": 0.94,

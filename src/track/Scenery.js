@@ -18,19 +18,49 @@ export class Scenery {
     this.spline = spline;
     this.trackData = trackData;
     this.roadWidth = trackData.roadWidth || 14.0;
+    this.envType = trackData.environment || 'coastal';
+    this.surfaceGrip = this.envType === 'monsoon' ? 0.85 : (this.envType === 'neon' ? 0.94 : 1.0);
     this.group = new THREE.Group();
+    this.waterfalls = [];
+    this.neonGlowMats = [];
 
-    this.initWaterShader();
-    this.initBeachAndRocks();
-    this.initTerrainFBM();
-    this.initRetainingWallAndLamps();
-    this.initGuardrailsAndCurbs();
-    this.initRoadsideLife();
-    this.initBoatsAndLighthouse();
-    this.initPalmsAndFlora();
-    this.initCornerChevrons();
+    if (this.envType === 'monsoon') {
+      this.initGuardrailsAndCurbs();
+      this.initMonsoonScenery();
+      this.initCornerChevrons();
+    } else if (this.envType === 'neon') {
+      this.initGuardrailsAndCurbs();
+      this.initNeonScenery();
+      this.initCornerChevrons();
+    } else {
+      this.initWaterShader();
+      this.initBeachAndRocks();
+      this.initTerrainFBM();
+      this.initRetainingWallAndLamps();
+      this.initGuardrailsAndCurbs();
+      this.initRoadsideLife();
+      this.initBoatsAndLighthouse();
+      this.initPalmsAndFlora();
+      this.initCornerChevrons();
+    }
 
     scene.add(this.group);
+  }
+
+  getSurfaceGrip() {
+    return this.surfaceGrip;
+  }
+
+  isClearOfRoadXZ(x, z, minClearance = 18) {
+    const samples = this.spline.samples || [];
+    const minSq = minClearance * minClearance;
+    for (let i = 0; i < samples.length; i += 4) {
+      const p = samples[i].position;
+      const dx = p.x - x;
+      const dz = p.z - z;
+      if (dx * dx + dz * dz < minSq) return false;
+    }
+    return true;
   }
 
   initWaterShader() {
@@ -878,6 +908,276 @@ export class Scenery {
     this.group.add(posts, panels);
   }
 
+  initMonsoonScenery() {
+    const halfW = this.roadWidth / 2;
+    const totalLen = this.spline.totalLength;
+
+    // 1. Lush wet emerald mountain cliff ribbon along right shoulder & misty gorge floor on left
+    const steps = 220;
+    const cliffCols = [halfW + 2.2, halfW + 10, halfW + 26, halfW + 58];
+    const cliffHeights = [-0.4, 8.5, 24.0, 46.0];
+    const verts = new Float32Array((steps + 1) * 4 * 3);
+    const cols = new Float32Array((steps + 1) * 4 * 3);
+    const colBase = new THREE.Color(0x1f3a26);
+    const colHigh = new THREE.Color(0x14532d);
+    const colMoss = new THREE.Color(0x2d4a32);
+
+    let ptr = 0;
+    for (let i = 0; i <= steps; i++) {
+      const s = (i / steps) * totalLen;
+      const frame = this.spline.getFrameAtDistance(s);
+      for (let j = 0; j < 4; j++) {
+        const d = cliffCols[j];
+        const noise = Math.sin(s * 0.045 + j * 1.9) * 2.8 + Math.cos(s * 0.11 + j) * 1.4;
+        const pos = frame.position.clone()
+          .addScaledVector(frame.binormal, d)
+          .addScaledVector(frame.normal, cliffHeights[j] + (j > 0 ? noise : 0));
+        verts[ptr * 3] = pos.x;
+        verts[ptr * 3 + 1] = pos.y;
+        verts[ptr * 3 + 2] = pos.z;
+
+        const c = j === 0 ? colMoss : (j >= 2 ? colHigh : colBase);
+        cols[ptr * 3] = c.r;
+        cols[ptr * 3 + 1] = c.g;
+        cols[ptr * 3 + 2] = c.b;
+        ptr++;
+      }
+    }
+
+    const indices = [];
+    for (let i = 0; i < steps; i++) {
+      for (let j = 0; j < 3; j++) {
+        const r1 = i * 4 + j;
+        const r2 = (i + 1) * 4 + j;
+        indices.push(r1, r2, r1 + 1, r1 + 1, r2, r2 + 1);
+      }
+    }
+    const cliffGeo = new THREE.BufferGeometry();
+    cliffGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    cliffGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    cliffGeo.setIndex(indices);
+    cliffGeo.computeVertexNormals();
+    const cliffMesh = new THREE.Mesh(
+      cliffGeo,
+      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true })
+    );
+    this.group.add(cliffMesh);
+
+    // Misty valley plane underneath
+    const valley = new THREE.Mesh(
+      new THREE.PlaneGeometry(3200, 3200),
+      new THREE.MeshStandardMaterial({ color: 0x28363c, roughness: 0.95 })
+    );
+    valley.rotation.x = -Math.PI / 2;
+    valley.position.y = -28;
+    this.group.add(valley);
+
+    // 2. Animated Roadside Waterfalls (4 cascades down right-side cliffs + misty spray)
+    const wfCanvas = document.createElement('canvas');
+    wfCanvas.width = 64;
+    wfCanvas.height = 128;
+    const wctx = wfCanvas.getContext('2d');
+    const grad = wctx.createLinearGradient(0, 0, 0, 128);
+    grad.addColorStop(0, 'rgba(186, 230, 253, 0.85)');
+    grad.addColorStop(0.5, 'rgba(224, 242, 254, 0.92)');
+    grad.addColorStop(1, 'rgba(241, 245, 249, 0.25)');
+    wctx.fillStyle = grad;
+    wctx.fillRect(0, 0, 64, 128);
+    wctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+    for (let y = 0; y < 128; y += 16) {
+      wctx.fillRect(10 + (y % 24), y, 8, 12);
+      wctx.fillRect(38 - (y % 18), y + 4, 6, 10);
+    }
+    const wfTex = new THREE.CanvasTexture(wfCanvas);
+    wfTex.wrapS = THREE.RepeatWrapping;
+    wfTex.wrapT = THREE.RepeatWrapping;
+
+    const wfMat = new THREE.MeshBasicMaterial({
+      map: wfTex,
+      transparent: true,
+      opacity: 0.88,
+      side: THREE.DoubleSide
+    });
+    const mistMat = new THREE.MeshBasicMaterial({
+      color: 0xe2e8f0,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false
+    });
+
+    const wfCount = 4;
+    for (let i = 0; i < wfCount; i++) {
+      const s = ((i + 0.5) / wfCount) * totalLen;
+      const frame = this.spline.getFrameAtDistance(s);
+      const wfPos = frame.position.clone()
+        .addScaledVector(frame.binormal, halfW + 9.5)
+        .addScaledVector(frame.normal, 12.0);
+      const wfMesh = new THREE.Mesh(new THREE.PlaneGeometry(7.5, 24), wfMat);
+      wfMesh.position.copy(wfPos);
+      wfMesh.lookAt(wfPos.clone().sub(frame.binormal));
+      wfMesh.rotateX(-0.22);
+
+      const spray = new THREE.Mesh(new THREE.SphereGeometry(4.2, 8, 6), mistMat);
+      spray.position.copy(frame.position)
+        .addScaledVector(frame.binormal, halfW + 4.8)
+        .addScaledVector(frame.normal, 0.8);
+      spray.scale.set(1.5, 0.65, 1.5);
+
+      this.group.add(wfMesh, spray);
+      this.waterfalls.push({ tex: wfTex, spray, seed: i * 1.7 });
+    }
+
+    // 3. Instanced wet boulders & monsoon foliage
+    const boulderGeo = new THREE.DodecahedronGeometry(1.4, 0);
+    const boulderMat = new THREE.MeshStandardMaterial({ color: 0x3f4742, roughness: 0.65, flatShading: true });
+    const boulderCount = 45;
+    const boulders = new THREE.InstancedMesh(boulderGeo, boulderMat, boulderCount);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < boulderCount; i++) {
+      const s = (i / boulderCount) * totalLen;
+      const frame = this.spline.getFrameAtDistance(s);
+      const pos = frame.position.clone()
+        .addScaledVector(frame.binormal, halfW + 3.2 + (i % 3) * 1.4)
+        .addScaledVector(frame.normal, 0.5);
+      dummy.position.copy(pos);
+      dummy.rotation.set(i * 0.7, i * 1.2, 0);
+      dummy.scale.set(0.8 + (i % 3) * 0.35, 0.65 + (i % 2) * 0.3, 0.9);
+      dummy.updateMatrix();
+      boulders.setMatrixAt(i, dummy.matrix);
+    }
+    boulders.instanceMatrix.needsUpdate = true;
+    this.group.add(boulders);
+  }
+
+  initNeonScenery() {
+    const halfW = this.roadWidth / 2;
+    const totalLen = this.spline.totalLength;
+
+    // 1. Glowing Neon Rim Strips along left (magenta) and right (cyan) barriers
+    const steps = 260;
+    const buildNeonStrip = (dOffset, hexColor) => {
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const s = (i / steps) * totalLen;
+        const frame = this.spline.getFrameAtDistance(s);
+        const pos = frame.position.clone()
+          .addScaledVector(frame.binormal, dOffset)
+          .addScaledVector(frame.normal, 0.85);
+        pts.push(pos);
+      }
+      const curve = new THREE.CatmullRomCurve3(pts, true);
+      const geo = new THREE.TubeGeometry(curve, 220, 0.11, 5, true);
+      const mat = new THREE.MeshBasicMaterial({ color: hexColor });
+      this.neonGlowMats.push(mat);
+      this.group.add(new THREE.Mesh(geo, mat));
+    };
+    buildNeonStrip(-(halfW + 0.55), 0xd946ef);
+    buildNeonStrip(halfW + 0.55, 0x06b6d4);
+
+    // Ground city dark slab
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(3400, 3400),
+      new THREE.MeshStandardMaterial({ color: 0x070a14, roughness: 0.85 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -18;
+    this.group.add(ground);
+
+    // 2. Instanced Emissive Skyscrapers (strictly clear of closed highway loops)
+    const winCanvas = document.createElement('canvas');
+    winCanvas.width = 128;
+    winCanvas.height = 256;
+    const ctx = winCanvas.getContext('2d');
+    ctx.fillStyle = '#0b1020';
+    ctx.fillRect(0, 0, 128, 256);
+    const palette = ['#38bdf8', '#e879f9', '#fbbf24', '#22d3ee'];
+    for (let y = 10; y < 246; y += 16) {
+      for (let x = 10; x < 118; x += 18) {
+        if ((x * 7 + y * 13) % 5 !== 0) {
+          ctx.fillStyle = palette[(x + y) % palette.length];
+          ctx.fillRect(x, y, 10, 9);
+        }
+      }
+    }
+    const winTex = new THREE.CanvasTexture(winCanvas);
+    winTex.wrapS = THREE.RepeatWrapping;
+    winTex.wrapT = THREE.RepeatWrapping;
+    winTex.repeat.set(2, 5);
+
+    const bldgGeo = new THREE.BoxGeometry(14, 1, 14);
+    const bldgMat = new THREE.MeshStandardMaterial({
+      color: 0x111827,
+      map: winTex,
+      emissive: new THREE.Color(0x38bdf8),
+      emissiveMap: winTex,
+      emissiveIntensity: 0.95,
+      roughness: 0.35,
+      metalness: 0.4
+    });
+
+    const bldgMatrices = [];
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < 110; i++) {
+      const s = (i / 110) * totalLen;
+      const frame = this.spline.getFrameAtDistance(s);
+      for (const side of [-1, 1]) {
+        const distOut = halfW + 24 + ((i * 19 + (side > 0 ? 7 : 3)) % 28);
+        const pos = frame.position.clone().addScaledVector(frame.binormal, side * distOut);
+        if (!this.isClearOfRoadXZ(pos.x, pos.z, halfW + 15)) continue;
+        const h = 38 + ((i * 23 + (side > 0 ? 11 : 0)) % 75);
+        dummy.position.set(pos.x, pos.y + h * 0.5 - 12, pos.z);
+        dummy.rotation.set(0, (i * 0.4) % Math.PI, 0);
+        dummy.scale.set(0.9 + (i % 3) * 0.35, h, 0.9 + ((i + 1) % 3) * 0.35);
+        dummy.updateMatrix();
+        bldgMatrices.push(dummy.matrix.clone());
+      }
+    }
+
+    if (bldgMatrices.length > 0) {
+      const bldgs = new THREE.InstancedMesh(bldgGeo, bldgMat, bldgMatrices.length);
+      bldgMatrices.forEach((m, idx) => bldgs.setMatrixAt(idx, m));
+      bldgs.instanceMatrix.needsUpdate = true;
+      this.group.add(bldgs);
+    }
+
+    // 3. Instanced Highway Streetlights every 65m
+    const lampSpacing = 65;
+    const lampCount = Math.floor(totalLen / lampSpacing);
+    const poleGeo = new THREE.CylinderGeometry(0.12, 0.16, 7.2, 6);
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.7, roughness: 0.3 });
+    const headGeo = new THREE.BoxGeometry(2.4, 0.22, 0.45);
+    const headMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+
+    const poles = new THREE.InstancedMesh(poleGeo, poleMat, lampCount * 2);
+    const heads = new THREE.InstancedMesh(headGeo, headMat, lampCount * 2);
+    let lIdx = 0;
+    for (let i = 0; i < lampCount; i++) {
+      const s = i * lampSpacing;
+      const frame = this.spline.getFrameAtDistance(s);
+      for (const side of [-1, 1]) {
+        const base = frame.position.clone().addScaledVector(frame.binormal, side * (halfW + 1.4));
+        dummy.position.set(base.x, base.y + 3.6, base.z);
+        dummy.rotation.set(0, Math.atan2(frame.tangent.x, frame.tangent.z), 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        poles.setMatrixAt(lIdx, dummy.matrix);
+
+        const headPos = frame.position.clone()
+          .addScaledVector(frame.binormal, side * (halfW + 0.3))
+          .addScaledVector(frame.normal, 7.1);
+        dummy.position.copy(headPos);
+        dummy.lookAt(headPos.clone().add(frame.tangent));
+        dummy.rotateY(Math.PI / 2);
+        dummy.updateMatrix();
+        heads.setMatrixAt(lIdx, dummy.matrix);
+        lIdx++;
+      }
+    }
+    poles.instanceMatrix.needsUpdate = true;
+    heads.instanceMatrix.needsUpdate = true;
+    this.group.add(poles, heads);
+  }
+
   update(dt, timeSec = 0) {
     // 1. Animate Ocean Shader Waves
     if (this.waterUniforms) {
@@ -897,5 +1197,38 @@ export class Scenery {
     if (this.beaconBeam) {
       this.beaconBeam.rotation.y = timeSec * 0.85;
     }
+
+    // 4. Animate Monsoon Waterfalls & Mist Spray
+    if (this.waterfalls && this.waterfalls.length > 0) {
+      this.waterfalls[0].tex.offset.y = -(timeSec * 1.6) % 1;
+      for (const wf of this.waterfalls) {
+        wf.spray.scale.setScalar(1.0 + Math.sin(timeSec * 4.2 + wf.seed) * 0.14);
+      }
+    }
+  }
+
+  dispose() {
+    if (this.scene && this.group) {
+      this.scene.remove(this.group);
+    }
+    const geos = new Set();
+    const mats = new Set();
+    this.group?.traverse((child) => {
+      if (child.geometry && !geos.has(child.geometry)) {
+        geos.add(child.geometry);
+        child.geometry.dispose();
+      }
+      if (child.material) {
+        const list = Array.isArray(child.material) ? child.material : [child.material];
+        list.forEach(m => {
+          if (!mats.has(m)) {
+            mats.add(m);
+            m.map?.dispose();
+            m.emissiveMap?.dispose();
+            m.dispose();
+          }
+        });
+      }
+    });
   }
 }

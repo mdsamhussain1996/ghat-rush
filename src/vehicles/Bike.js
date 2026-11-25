@@ -71,6 +71,14 @@ export class Bike {
     this.lapStartTime = 0;
     this.totalRaceTime = 0;
     this.topSpeedReachedKmh = 0;
+    this.totalDraftSeconds = 0;
+    this.currentNitroChain = 0;
+    this.maxNitroChain = 0;
+    this.didFullNitroDrain = false;
+    this._nitroPeakAtChainStart = 0;
+    this.hadCrashThisLap = false;
+    this.cleanLapsCount = 0;
+    this.cleanMeters = 0;
 
     // Visual effect states
     this.brakeGlow = 0;
@@ -81,7 +89,7 @@ export class Bike {
     this.group.add(this.bikeMesh);
 
     this.initModel();
-    scene.add(this.group);
+    if (scene) scene.add(this.group);
   }
 
   initModel() {
@@ -90,6 +98,7 @@ export class Bike {
       roughness: 0.22,
       metalness: 0.65
     });
+    this.paintMat = paintMat;
 
     const darkMetalMat = new THREE.MeshStandardMaterial({
       color: 0x1f232b,
@@ -367,12 +376,23 @@ export class Bike {
     // 1. Throttle, Nitro, and Acceleration Dynamics
     this.isNitro = !!(controls.nitro && this.nitro > 0.1 && this.speed > 10);
     if (this.isNitro) {
+      if (this.currentNitroChain === 0) {
+        this._nitroPeakAtChainStart = this.nitro;
+      }
+      this.currentNitroChain += dt;
+      if (this.currentNitroChain > this.maxNitroChain) {
+        this.maxNitroChain = this.currentNitroChain;
+      }
       this.nitro = Math.max(0, this.nitro - 1.25 * dt);
+      if (this.nitro <= 0.15 && this._nitroPeakAtChainStart >= this.nitroCapacity * 0.78) {
+        this.didFullNitroDrain = true;
+      }
       this.flameL.visible = true;
       this.flameR.visible = true;
       this.flameL.scale.setScalar(0.85 + Math.random() * 0.35);
       this.flameR.scale.setScalar(0.85 + Math.random() * 0.35);
     } else {
+      this.currentNitroChain = 0;
       this.flameL.visible = false;
       this.flameR.visible = false;
       // Gradual natural nitro trickle recharge
@@ -503,9 +523,14 @@ export class Bike {
     if (kmh > this.topSpeedReachedKmh) this.topSpeedReachedKmh = kmh;
 
     // 4. Advance distance along track
+    if (this.speed > 18) {
+      this.cleanMeters += this.speed * dt;
+    }
     this.s = (this.s + this.speed * dt);
     if (this.s >= this.spline.totalLength) {
       this.s -= this.spline.totalLength;
+      if (!this.hadCrashThisLap) this.cleanLapsCount++;
+      this.hadCrashThisLap = false;
       this.lap++;
     }
 
@@ -514,6 +539,9 @@ export class Bike {
 
     // 6. Drafting & Slipstream Detection (Phase 0 Fix: speed > 80 km/h, 4-16m ahead, 0.5s persistence)
     this.checkDrafting(rivalsList, trafficList, dt);
+    if (this.isDrafting) {
+      this.totalDraftSeconds += dt;
+    }
 
     // 7. Near Miss Detection
     this.checkNearMisses(trafficList, dt);
@@ -673,6 +701,8 @@ export class Bike {
     this.isDrafting = false;
     this.draftPersistTimer = 0;
     this.gripDemandRatio = 0;
+    this.hadCrashThisLap = true;
+    this.currentNitroChain = 0;
 
     const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
     if (this.crashType === 'rail') {
@@ -754,6 +784,14 @@ export class Bike {
     this.crashType = 'rail';
     this.gripDemandRatio = 0;
     this.topSpeedReachedKmh = 0;
+    this.totalDraftSeconds = 0;
+    this.currentNitroChain = 0;
+    this.maxNitroChain = 0;
+    this.didFullNitroDrain = false;
+    this._nitroPeakAtChainStart = 0;
+    this.hadCrashThisLap = false;
+    this.cleanLapsCount = 0;
+    this.cleanMeters = 0;
     this.rider.resetPose();
     this.isSliding = false;
     this.isNitro = false;
@@ -771,7 +809,33 @@ export class Bike {
     this.syncTransform();
   }
 
+  setPaintColor(hex) {
+    this.paintColor = hex;
+    if (this.paintMat) {
+      this.paintMat.color.set(hex);
+    }
+  }
+
+  dispose() {
+    if (this.scene && this.group) {
+      this.scene.remove(this.group);
+    }
+    const disposedGeos = new Set();
+    const disposedMats = new Set();
+    this.group?.traverse((child) => {
+      if (child.geometry && !disposedGeos.has(child.geometry)) {
+        disposedGeos.add(child.geometry);
+        child.geometry.dispose();
+      }
+      if (child.material && !disposedMats.has(child.material)) {
+        disposedMats.add(child.material);
+        child.material.dispose();
+      }
+    });
+  }
+
   syncTransform() {
+    if (!this.spline) return;
     const frame = this.spline.getFrameAtDistance(this.s);
 
     // Position in world space: centerline + lateral binormal * d

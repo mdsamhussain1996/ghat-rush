@@ -1,12 +1,14 @@
 /**
- * ResultsScreen — Post-race Podium & Rewards Display
- * Renders cached race result metrics without mutating persistent storage on re-open (e.g. exiting replay).
+ * ResultsScreen — Post-race Podium, Objectives & Score Breakdown
+ * Renders cached metrics without mutating persistent storage on re-open (e.g. exiting replay).
  */
 export class ResultsScreen {
-  constructor(container, onRestart, onReplay) {
+  constructor(container, onRestart, onReplay, onNextRace = null, onMenu = null) {
     this.container = container || document.body;
     this.onRestart = onRestart;
     this.onReplay = onReplay;
+    this.onNextRace = onNextRace;
+    this.onMenu = onMenu;
 
     this.root = document.createElement('div');
     this.root.id = 'results-screen';
@@ -27,15 +29,25 @@ export class ResultsScreen {
       position,
       totalRacers,
       raceTime,
-      nearMisses,
+      nearMisses = 0,
       bestLap,
-      cashWon = Math.max(5000, (4 - position) * 12000) + nearMisses * 350,
-      starsWon = position === 1 ? 3 : (position <= 3 ? 2 : 1)
+      topSpeedKmh = 0,
+      scoreBreakdown = { nearMissPoints: 0, draftPoints: 0, cleanPoints: 0, positionBonus: 0, totalScore: 0 },
+      objectives = [],
+      hasNextRace = false,
+      cashWon = 5000,
+      starsWon = 0
     } = data;
 
     const isPodium = position <= 3;
     const timeFormatted = this.formatTime(raceTime);
     const bestLapFormatted = this.formatTime(bestLap);
+
+    const objectivesHtml = objectives.length > 0
+      ? `<div class="results-objectives">${objectives.map(o =>
+          `<div class="res-obj-item ${o.done ? 'done' : ''}">${o.done ? '★' : '☆'} ${o.label}</div>`
+        ).join('')}</div>`
+      : '';
 
     this.root.innerHTML = `
       <div class="results-card">
@@ -51,39 +63,63 @@ export class ResultsScreen {
           </div>
           <div class="stat-box">
             <div class="stat-label">BEST LAP</div>
-            <div class="stat-value">${bestLapFormatted}</div>
+            <div class="stat-value" id="res-best-lap">${bestLapFormatted}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">TOP SPEED</div>
+            <div class="stat-value" id="res-top-speed">${topSpeedKmh} km/h</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">TOTAL SCORE</div>
+            <div class="stat-value text-accent" id="res-total-score">${scoreBreakdown.totalScore.toLocaleString('en-IN')}</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">NEAR MISSES</div>
-            <div class="stat-value text-accent">${nearMisses}</div>
+            <div class="stat-value">${nearMisses} <span class="stat-mini">(+${scoreBreakdown.nearMissPoints})</span></div>
           </div>
           <div class="stat-box">
             <div class="stat-label">PRIZE MONEY</div>
             <div class="stat-value text-gold">+₹ ${cashWon.toLocaleString('en-IN')}</div>
           </div>
           <div class="stat-box" style="grid-column: 1 / -1;">
-            <div class="stat-label">STARS EARNED</div>
-            <div class="stat-value text-stars">${'★'.repeat(starsWon)}${'☆'.repeat(3 - starsWon)}</div>
+            <div class="stat-label">SCORE BREAKDOWN · DRAFT +${scoreBreakdown.draftPoints} · CLEAN +${scoreBreakdown.cleanPoints} · FINISH +${scoreBreakdown.positionBonus}</div>
+            <div class="stat-value text-stars">${'★'.repeat(starsWon)}${'☆'.repeat(Math.max(0, 3 - starsWon))}</div>
+            ${objectivesHtml}
           </div>
         </div>
 
         <div class="results-actions">
+          ${hasNextRace ? `<button id="btn-next-race" class="btn btn-primary">NEXT RACE</button>` : ''}
           <button id="btn-replay" class="btn btn-secondary">WATCH REPLAY</button>
-          <button id="btn-restart" class="btn btn-primary">RACE AGAIN</button>
+          <button id="btn-restart" class="btn ${hasNextRace ? 'btn-secondary' : 'btn-primary'}">RACE AGAIN</button>
+          <button id="btn-menu" class="btn btn-secondary">MAIN MENU</button>
         </div>
       </div>
     `;
 
     this.root.classList.remove('hidden');
 
+    const nextBtn = document.getElementById('btn-next-race');
+    if (nextBtn) {
+      nextBtn.onclick = () => {
+        this.hide();
+        this.onNextRace?.();
+      };
+    }
+
     document.getElementById('btn-restart').onclick = () => {
       this.hide();
-      if (this.onRestart) this.onRestart();
+      this.onRestart?.();
     };
 
     document.getElementById('btn-replay').onclick = () => {
       this.hide();
-      if (this.onReplay) this.onReplay();
+      this.onReplay?.();
+    };
+
+    document.getElementById('btn-menu').onclick = () => {
+      this.hide();
+      this.onMenu?.();
     };
   }
 

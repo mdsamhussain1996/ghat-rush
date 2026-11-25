@@ -14,7 +14,9 @@ import { audio } from './Audio.js';
 import { Loop } from './Loop.js';
 import { save } from './Save.js';
 import { ReplayRecorder } from './ReplayRecorder.js';
+import { ObjectiveTracker } from './ObjectiveTracker.js';
 import { HUD } from '../ui/HUD.js';
+import { MenuSystem } from '../ui/MenuSystem.js';
 import { PauseMenu } from '../ui/PauseMenu.js';
 import { ResultsScreen } from '../ui/ResultsScreen.js';
 import { F3Overlay } from '../ui/F3Overlay.js';
@@ -22,18 +24,19 @@ import tracksData from '../data/tracks.json';
 import bikesData from '../data/bikes.json';
 
 /**
- * Main Game Controller — Orchestrates simulation, track streaming, entities, audio, and UI.
+ * Main Game Controller — Orchestrates simulation, menus, career, track streaming, entities, audio, and UI.
  */
 export class Game {
   constructor(container) {
     this.container = container || document.body;
 
     // State
-    this.state = 'COUNTDOWN'; // 'COUNTDOWN', 'RACING', 'PAUSED', 'FINISHED', 'REPLAY', 'READY_MENU'
+    this.state = 'TITLE'; // 'TITLE', 'MENU', 'GARAGE', 'COUNTDOWN', 'RACING', 'PAUSED', 'FINISHED', 'REPLAY'
     this.prePauseState = 'RACING';
     this.countdownTimer = 3.8;
     this.raceTime = 0;
     this.totalTime = 0;
+    this.slowMoTimer = 0;
     this.totalLaps = 3;
     this.nearMissCount = 0;
     this.bestLapTime = Infinity;
@@ -41,26 +44,45 @@ export class Game {
     this.lastLap = 1;
     this.lastRaceResults = null;
     this.lastEndSnapshot = null;
-    this.slowMoTimer = 0;
+    this.menuAttractS = 0;
 
-    // Track Configuration (default Konkan Cliffs; supports ?track=<id> for multi-track testing)
-    const params = new URLSearchParams(window.location.search);
-    const trackParam = params.get('track');
-    this.trackConfig = tracksData.find(t => t.id === trackParam)
-      || tracksData.find(t => t.id === 'coast_route_1')
-      || tracksData[0];
-    this.totalLaps = this.trackConfig.laps || 3;
-    this.playerBikeData = bikesData.find(b => b.id === 'vayu_r7') || bikesData[3];
+    // References disposed/rebuilt per session
+    this.spline = null;
+    this.trackBuilder = null;
+    this.roadMesh = null;
+    this.scenery = null;
+    this.sky = null;
+    this.playerBike = null;
+    this.traffic = null;
+    this.rivalAI = null;
+    this.objectiveTracker = null;
+    this.sessionConfig = { mode: 'quick', trackId: 'coast_route_1', bikeId: save.getActiveBikeId() };
 
     this.replayRecorder = new ReplayRecorder(4800);
     this.replayReadIdx = 0;
     this.replayTime = 0;
 
     this.initScene();
-    this.initTrack();
-    this.initEntities();
     this.initUI();
     this.initVisibilityPause();
+
+    // Parse query params (?track=<id>&bike=<id>&autostart=1)
+    const params = new URLSearchParams(window.location.search);
+    const trackParam = params.get('track');
+    const bikeParam = params.get('bike');
+    const autostart = params.get('autostart') === '1';
+
+    this.loadSession({
+      mode: 'quick',
+      trackId: trackParam || tracksData[0]?.id || 'coast_route_1',
+      bikeId: bikeParam || (autostart ? (params.get('bike') || save.getActiveBikeId()) : save.getActiveBikeId()),
+      enterRace: autostart
+    });
+
+    if (!autostart) {
+      this.enterMenuScreen('title');
+    }
+
     this.initLoop();
   }
 
@@ -68,50 +90,18 @@ export class Game {
     this.scene = new THREE.Scene();
     this.renderer = new Renderer(this.container);
     this.cameraRig = new CameraRig(null);
-    this.sky = new Sky(this.scene, this.trackConfig.environment || 'coastal');
     this.postFX = new PostFX(this.container);
     this.input = new Input();
-  }
 
-  initTrack() {
-    this.spline = new RoadSpline(this.trackConfig.controlPoints, this.trackConfig);
-    this.cameraRig.spline = this.spline;
-
-    this.trackBuilder = new TrackBuilder(this.spline, this.trackConfig);
-    this.roadMesh = this.trackBuilder.buildRoadMesh();
-    this.scene.add(this.roadMesh);
-
-    this.scenery = new Scenery(this.scene, this.spline, this.trackConfig);
-  }
-
-  initEntities() {
-    // 1. Player Bike
-    this.playerBike = new Bike(this.scene, this.spline, this.playerBikeData, true, { color: '#ff4d29' });
-    this.playerBike.s = 0;
-    this.playerBike.d = 0;
-    this.playerBike.syncTransform();
-
-    this.playerBike.onNearMiss = (combo) => {
-      this.nearMissCount++;
-      const bonus = 150 * combo;
-      this.hud.showPopup('NEAR MISS!', `+${bonus} · COMBO ×${combo}`, 'near-miss');
-    };
-
-    // 2. Traffic Pool
-    this.traffic = new Traffic(this.scene, this.spline, this.trackConfig);
-
-    this.playerBike.onRespawn = (s, range) => {
-      this.traffic.clearAhead(s, range);
-    };
-
-    this.playerBike.onCrash = (type) => {
-      this.slowMoTimer = 0.3;
-      this.cameraRig.triggerCrashShake(type === 'traffic' ? 0.55 : 0.42);
-      this.hud.showPopup(type === 'traffic' ? 'TRAFFIC IMPACT!' : 'RAIL CRASH!', 'SLOW-MO RECOVERY', 'crash');
-    };
-
-    // 3. AI Rivals
-    this.rivalAI = new RivalAI(this.scene, this.spline, this.trackConfig, bikesData);
+    const settings = save.getSettings();
+    if (settings.quality && settings.quality !== 'auto') {
+      this.renderer.setQuality(settings.quality);
+    }
+    if (settings.cameraView && this.cameraRig.modes.includes(settings.cameraView)) {
+      this.cameraRig.modeIndex = this.cameraRig.modes.indexOf(settings.cameraView);
+      this.cameraRig.mode = settings.cameraView;
+    }
+    this.input.tiltEnabled = !!settings.tiltEnabled;
   }
 
   initUI() {
@@ -123,6 +113,34 @@ export class Game {
       }
     });
     this.hud.syncMuteState(audio.muted);
+
+    this.menuSystem = new MenuSystem(this.container, {
+      onScreenChange: (screen) => {
+        if (screen === 'title') this.state = 'TITLE';
+        else if (screen === 'garage') this.state = 'GARAGE';
+        else this.state = 'MENU';
+      },
+      onStartRace: (cfg) => {
+        this.loadSession({ ...cfg, enterRace: true });
+      },
+      onMuteSync: (muted) => {
+        this.hud.syncMuteState(muted);
+      },
+      onQualityChange: (q) => {
+        if (q !== 'auto') this.renderer.setQuality(q);
+      },
+      onCameraChange: (c) => {
+        if (this.cameraRig.modes.includes(c)) {
+          this.cameraRig.modeIndex = this.cameraRig.modes.indexOf(c);
+          this.cameraRig.mode = c;
+        }
+      },
+      onTiltChange: (enabled, calibrateNow) => {
+        this.input.tiltEnabled = !!enabled;
+        this.input.mobileMode = enabled ? 'tilt' : 'buttons';
+        if (calibrateNow) this.input.calibrateTilt();
+      }
+    });
 
     this.pauseMenu = new PauseMenu(this.container, {
       onResume: () => this.resumeGame(),
@@ -142,7 +160,9 @@ export class Game {
     this.resultsScreen = new ResultsScreen(
       this.container,
       () => this.restartRace(),
-      () => this.startReplay()
+      () => this.startReplay(),
+      () => this.startNextCareerRace(),
+      () => this.quitToMenu()
     );
     this.f3Overlay = new F3Overlay(this.container, this.renderer);
 
@@ -150,6 +170,7 @@ export class Game {
     this.countdownEl = document.createElement('div');
     this.countdownEl.id = 'countdown-display';
     this.countdownEl.className = 'countdown-text';
+    this.countdownEl.style.display = 'none';
     this.container.appendChild(this.countdownEl);
 
     // Replay banner
@@ -164,26 +185,6 @@ export class Game {
     this.container.appendChild(this.replayBanner);
     this.replayBanner.querySelector('#replay-exit-btn').onclick = () => this.exitReplay();
 
-    // Lightweight Ready Menu overlay for Quit-to-Menu before Phase 3 full menu system
-    this.readyMenuOverlay = document.createElement('div');
-    this.readyMenuOverlay.id = 'ready-menu-overlay';
-    this.readyMenuOverlay.className = 'ui-modal hidden';
-    this.readyMenuOverlay.innerHTML = `
-      <div class="results-card pause-card">
-        <h1 class="results-title" style="color:#ff4d29;">GHAT RUSH</h1>
-        <p class="pause-sub">${this.trackConfig.name} · ${this.playerBikeData.name}</p>
-        <div class="pause-actions">
-          <button id="ready-start-btn" class="btn btn-primary">START RACE</button>
-        </div>
-      </div>
-    `;
-    this.container.appendChild(this.readyMenuOverlay);
-    this.readyMenuOverlay.querySelector('#ready-start-btn').onclick = () => {
-      this.readyMenuOverlay.classList.add('hidden');
-      this.hud.show();
-      this.restartRace();
-    };
-
     // Audio unlock listener on first user interaction
     const unlockAudio = () => {
       audio.init();
@@ -195,6 +196,140 @@ export class Game {
     window.addEventListener('click', unlockAudio);
     window.addEventListener('keydown', unlockAudio);
     window.addEventListener('touchstart', unlockAudio);
+  }
+
+  disposeSession() {
+    this.playerBike?.dispose();
+    this.playerBike = null;
+
+    this.traffic?.dispose();
+    this.traffic = null;
+
+    this.rivalAI?.dispose();
+    this.rivalAI = null;
+
+    this.trackBuilder?.dispose(this.scene);
+    this.trackBuilder = null;
+    this.roadMesh = null;
+
+    this.scenery?.dispose();
+    this.scenery = null;
+
+    this.sky?.dispose();
+    this.sky = null;
+  }
+
+  loadSession(options = {}) {
+    this.disposeSession();
+
+    const trackConfig = tracksData.find(t => t.id === options.trackId)
+      || tracksData.find(t => t.id === 'coast_route_1')
+      || tracksData[0];
+    this.trackConfig = trackConfig;
+    this.totalLaps = options.laps || trackConfig.laps || 3;
+
+    const rawBike = bikesData.find(b => b.id === (options.bikeId || save.getActiveBikeId())) || bikesData[0];
+    this.playerBikeData = save.getEffectiveBikeStats(rawBike);
+    this.sessionConfig = {
+      mode: options.mode || 'quick',
+      trackId: trackConfig.id,
+      bikeId: rawBike.id,
+      laps: this.totalLaps,
+      careerRace: options.careerRace || null,
+      careerLeague: options.careerLeague || null
+    };
+
+    // Scene sky + track + scenery
+    this.sky = new Sky(this.scene, trackConfig.environment || 'coastal');
+    this.spline = new RoadSpline(trackConfig.controlPoints, trackConfig);
+    this.cameraRig.spline = this.spline;
+
+    this.trackBuilder = new TrackBuilder(this.spline, trackConfig);
+    this.roadMesh = this.trackBuilder.buildRoadMesh();
+    this.scene.add(this.roadMesh);
+
+    this.scenery = new Scenery(this.scene, this.spline, trackConfig);
+    const surfaceGrip = this.scenery.getSurfaceGrip();
+
+    // Player bike
+    this.playerBike = new Bike(this.scene, this.spline, this.playerBikeData, true, { color: this.playerBikeData.color });
+    this.playerBike.surfaceGrip = surfaceGrip;
+    this.playerBike.s = 0;
+    this.playerBike.d = 0;
+    this.playerBike.syncTransform();
+
+    this.playerBike.onNearMiss = (combo) => {
+      this.nearMissCount++;
+      const bonus = 150 * combo;
+      this.hud.showPopup('NEAR MISS!', `+${bonus} · COMBO ×${combo}`, 'near-miss');
+    };
+
+    this.traffic = new Traffic(this.scene, this.spline, trackConfig);
+    this.playerBike.onRespawn = (s, range) => {
+      this.traffic?.clearAhead(s, range);
+    };
+
+    this.playerBike.onCrash = (type) => {
+      this.slowMoTimer = 0.3;
+      this.cameraRig.triggerCrashShake(type === 'traffic' ? 0.55 : 0.42);
+      this.hud.showPopup(type === 'traffic' ? 'TRAFFIC IMPACT!' : 'RAIL CRASH!', 'SLOW-MO RECOVERY', 'crash');
+    };
+
+    // Rivals (with optional Career Boss override)
+    const rivalTrackCfg = {
+      ...trackConfig,
+      bossRival: this.sessionConfig.careerRace?.bossRival || null
+    };
+    this.rivalAI = new RivalAI(this.scene, this.spline, rivalTrackCfg, bikesData);
+    this.rivalAI.rivals.forEach(r => {
+      r.bike.surfaceGrip = surfaceGrip;
+    });
+
+    // Objectives tracker
+    const objLabels = this.sessionConfig.careerRace?.starsTarget || [];
+    this.objectiveTracker = new ObjectiveTracker(objLabels, this.totalLaps);
+
+    if (options.enterRace) {
+      this.menuSystem.hide();
+      this.restartRace();
+    } else {
+      this.cameraRig.reset(this.playerBike);
+      this.hud.setObjectives([]);
+    }
+  }
+
+  enterMenuScreen(screen = 'main') {
+    this.pauseMenu.hide();
+    this.resultsScreen.hide();
+    this.replayBanner.classList.add('hidden');
+    this.countdownEl.style.display = 'none';
+    audio.stopEngine();
+    this.hud.hide();
+    this.menuSystem.show(screen);
+  }
+
+  quitToMenu() {
+    this.enterMenuScreen('main');
+  }
+
+  startNextCareerRace() {
+    const curId = this.sessionConfig.careerRace?.id;
+    if (!curId) {
+      this.quitToMenu();
+      return;
+    }
+    const next = this.menuSystem.findNextCareerRace(curId);
+    if (!next) {
+      this.quitToMenu();
+      return;
+    }
+    if (next.race.bossRival) {
+      this.enterMenuScreen('career');
+      this.menuSystem.pendingBossLaunch = next;
+      this.menuSystem.render();
+    } else {
+      this.menuSystem.launchCareerRace(next);
+    }
   }
 
   initVisibilityPause() {
@@ -239,23 +374,33 @@ export class Game {
     audio.resume();
   }
 
-  quitToMenu() {
-    this.pauseMenu.hide();
-    this.resultsScreen.hide();
-    this.replayBanner.classList.add('hidden');
-    this.countdownEl.style.display = 'none';
-    audio.stopEngine();
-    this.state = 'READY_MENU';
-    this.hud.hide();
-    this.readyMenuOverlay.classList.remove('hidden');
-  }
-
   update(dt) {
     const controls = this.input.getControls();
 
     // Global Mute hotkey (M)
     if (controls.mute) {
       this.toggleMute();
+    }
+
+    // Menu / Title / Garage camera updates
+    if (this.state === 'TITLE' || this.state === 'MENU' || this.state === 'GARAGE') {
+      this.totalTime += dt;
+      if (this.state === 'GARAGE') {
+        this.menuSystem.updateGarage(dt);
+      } else if (this.spline && this.playerBike) {
+        this.menuAttractS = (this.menuAttractS + 14 * dt) % this.spline.totalLength;
+        const frame = this.spline.getFrameAtDistance(this.menuAttractS);
+        const camPos = frame.position.clone()
+          .addScaledVector(frame.normal, 4.2)
+          .addScaledVector(frame.binormal, Math.sin(this.totalTime * 0.25) * 3.0);
+        const lookPt = this.spline.getFrameAtDistance(this.menuAttractS + 32).position.clone()
+          .add(new THREE.Vector3(0, 1.5, 0));
+        this.cameraRig.camera.position.copy(camPos);
+        this.cameraRig.camera.lookAt(lookPt);
+        this.scenery?.update(dt, this.totalTime);
+        this.sky?.update({ group: { position: camPos } }, dt);
+      }
+      return;
     }
 
     // Pause / Replay exit hotkey (Esc / P)
@@ -272,7 +417,7 @@ export class Game {
       }
     }
 
-    if (this.state === 'PAUSED' || this.state === 'READY_MENU') {
+    if (this.state === 'PAUSED') {
       return;
     }
 
@@ -317,6 +462,7 @@ export class Game {
       const idleControls = { throttle: 0, brake: 0, steer: 0, nitro: false, wheelie: false };
       this.playerBike.update(dt, idleControls, [], []);
       this.cameraRig.update(dt, this.playerBike);
+      this.sky.update(this.playerBike, dt);
       const rivalsBikes = this.rivalAI.rivals.map(r => r.bike);
       this.hud.update(dt, this.playerBike, rivalsBikes, 0, this.totalLaps);
       return;
@@ -336,6 +482,7 @@ export class Game {
         const lapTime = this.raceTime - this.currentLapStartTime;
         if (lapTime > 0 && lapTime < this.bestLapTime) {
           this.bestLapTime = lapTime;
+          save.recordBestLap(this.trackConfig.id, lapTime);
         }
         this.currentLapStartTime = this.raceTime;
         this.lastLap = this.playerBike.lap;
@@ -357,19 +504,29 @@ export class Game {
       const rivalsBikes = this.rivalAI.rivals.map(r => r.bike);
       this.playerBike.update(simDt, controls, rivalsBikes, activeTraffic);
 
-      // Record tick to Replay ring buffer
+      // Update live Career objectives if in Career mode
+      if (this.sessionConfig.mode === 'career' && this.objectiveTracker) {
+        const lb = this.rivalAI.getLeaderboard(this.playerBike);
+        const curPos = lb.findIndex(e => e.isPlayer) + 1;
+        const objs = this.objectiveTracker.evaluate({
+          position: curPos,
+          nearMissCount: this.nearMissCount,
+          playerBike: this.playerBike
+        }, false);
+        this.hud.setObjectives(objs);
+      }
+
       this.replayRecorder.recordFrame(this.playerBike, rivalsBikes, activeTraffic);
 
       this.cameraRig.update(dt, this.playerBike, activeTraffic);
-      this.sky.update(this.playerBike);
+      this.sky.update(this.playerBike, dt);
       this.postFX.update(simDt, this.playerBike);
-
       this.hud.update(simDt, this.playerBike, rivalsBikes, this.raceTime, this.totalLaps);
     } else if (this.state === 'FINISHED') {
       this.playerBike.speed = Math.max(0, this.playerBike.speed - 12.0 * dt);
       this.playerBike.update(dt, { throttle: 0, brake: 0.4, steer: 0, nitro: false, wheelie: false }, [], []);
       this.cameraRig.update(dt, this.playerBike);
-      this.sky.update(this.playerBike);
+      this.sky.update(this.playerBike, dt);
       this.postFX.update(dt, this.playerBike);
     } else if (this.state === 'REPLAY') {
       this.updateReplay(dt);
@@ -413,31 +570,60 @@ export class Game {
     this.traffic.applyReplayFrame(frame.t);
 
     this.cameraRig.updateReplay(dt, this.playerBike, this.replayTime, this.traffic.getActiveList());
-    this.sky.update(this.playerBike);
+    this.sky.update(this.playerBike, dt);
     this.postFX.update(dt, this.playerBike);
   }
 
   render(alpha, currentTime) {
-    this.renderer.render(this.scene, this.cameraRig.camera);
+    if (this.state === 'GARAGE' && this.menuSystem?.garageScene && this.menuSystem?.garageCamera) {
+      this.renderer.render(this.menuSystem.garageScene, this.menuSystem.garageCamera);
+    } else {
+      this.renderer.render(this.scene, this.cameraRig.camera);
+    }
     this.f3Overlay.update(currentTime, this.renderer.getStats());
   }
 
   finishRace() {
     this.state = 'FINISHED';
+    this.slowMoTimer = 0;
     this.pauseMenu.hide();
     audio.setPaused(false);
     audio.stopEngine();
 
     const leaderboard = this.rivalAI.getLeaderboard(this.playerBike);
     const playerPos = leaderboard.findIndex(entry => entry.isPlayer) + 1;
-    const cashWon = Math.max(5000, (4 - playerPos) * 12000) + (this.nearMissCount * 350);
-    const starsWon = playerPos === 1 ? 3 : (playerPos <= 3 ? 2 : 1);
+    const scoreBreakdown = ObjectiveTracker.computeScoreBreakdown({
+      position: playerPos,
+      nearMissCount: this.nearMissCount,
+      playerBike: this.playerBike
+    });
 
-    // Save rewards ONCE per finished race
+    let cashWon = Math.max(5000, (4 - playerPos) * 12000) + (this.nearMissCount * 350);
+    let starsWon = 0;
+    let objectives = [];
+    let hasNextRace = false;
+
+    if (this.sessionConfig.mode === 'career' && this.sessionConfig.careerRace && this.objectiveTracker) {
+      const race = this.sessionConfig.careerRace;
+      objectives = this.objectiveTracker.evaluate({
+        position: playerPos,
+        nearMissCount: this.nearMissCount,
+        playerBike: this.playerBike
+      }, true);
+      const wonBoss = playerPos === 1 && !!race.bossRival;
+      if (wonBoss) {
+        cashWon += (race.bossRival.reward || 15000);
+      }
+      const rec = save.recordCareerRace(race.id, this.objectiveTracker.achieved, wonBoss);
+      starsWon = rec.earnedCount;
+      hasNextRace = !!this.menuSystem.findNextCareerRace(race.id);
+    } else {
+      starsWon = playerPos === 1 ? 3 : (playerPos <= 3 ? 2 : 1);
+    }
+
+    // Save cash rewards ONCE per finished race
     save.addCash(cashWon);
-    save.addStars(starsWon);
 
-    // Store finish snapshot in case user enters & exits replay
     const rivalsBikes = this.rivalAI.rivals.map(r => r.bike);
     this.lastEndSnapshot = {
       p: { s: this.playerBike.s, d: this.playerBike.d, speed: this.playerBike.speed },
@@ -450,6 +636,10 @@ export class Game {
       raceTime: this.raceTime,
       nearMisses: this.nearMissCount,
       bestLap: this.bestLapTime,
+      topSpeedKmh: this.playerBike.topSpeedReachedKmh || 0,
+      scoreBreakdown,
+      objectives,
+      hasNextRace,
       cashWon,
       starsWon
     };
@@ -502,10 +692,10 @@ export class Game {
   }
 
   restartRace() {
+    this.menuSystem.hide();
     this.resultsScreen.hide();
     this.pauseMenu.hide();
     this.replayBanner.classList.add('hidden');
-    this.readyMenuOverlay.classList.add('hidden');
     this.hud.show();
     this.hud.clearPopups();
 
@@ -529,6 +719,14 @@ export class Game {
     this.traffic.reset();
     this.rivalAI.reset();
     this.cameraRig.reset(this.playerBike);
+
+    if (this.sessionConfig.mode === 'career' && this.objectiveTracker) {
+      const labels = this.sessionConfig.careerRace?.starsTarget || [];
+      this.objectiveTracker = new ObjectiveTracker(labels, this.totalLaps);
+      this.hud.setObjectives(labels.map(label => ({ label, done: false })));
+    } else {
+      this.hud.setObjectives([]);
+    }
 
     audio.setPaused(false);
     if (audio.ctx) {

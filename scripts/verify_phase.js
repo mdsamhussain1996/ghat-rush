@@ -703,6 +703,179 @@ async function runPhase2Checks(client) {
   console.log('✓ Phase 2 cornering, chevron warnings, fair signaling traffic, crash split & R reset checks passed');
 }
 
+async function runPhase3Checks(client) {
+  console.log('--- Phase 3 Functional Checks (Menus, Career, Garage, Monsoon/Neon) ---');
+
+  // Clear localStorage save and boot WITHOUT ?autostart=1 to verify Title -> Main Menu & ₹8,000 starter save
+  await client.eval('localStorage.removeItem("ghat_rush_save_v1")');
+  await client.navigate(`${BASE_URL}/`);
+  client.clearErrors();
+
+  const titleState = await client.eval(`(() => {
+    const g = window.gameInstance;
+    const saved = JSON.parse(localStorage.getItem('ghat_rush_save_v1') || 'null');
+    return {
+      state: g.state,
+      titleVisible: !!document.getElementById('title-start-btn'),
+      hudHidden: document.getElementById('hud-root').style.display === 'none',
+      savedCash: saved?.cash
+    };
+  })()`);
+  assert(titleState.state === 'TITLE' && titleState.titleVisible && titleState.hudHidden,
+    `Expected TITLE screen on fresh boot, got ${JSON.stringify(titleState)}`);
+
+  // Title -> Main Menu
+  await client.eval('document.getElementById("title-start-btn").click()');
+  await client.waitUntil('window.gameInstance.state === "MENU" && !!document.getElementById("menu-btn-garage")', 'Main Menu appears');
+  const starterInfo = await client.eval(`({
+    cashText: document.getElementById('menu-cash-val').textContent,
+    starsText: document.getElementById('menu-stars-val').textContent,
+    activeBike: window.gameInstance.playerBikeData.id,
+    vayuR7Locked: !JSON.parse(localStorage.getItem('ghat_rush_save_v1') || '{"unlockedBikes":["vayu_150"]}').unlockedBikes.includes('vayu_r7')
+  })`);
+  assert(starterInfo.cashText.includes('8,000'), `Expected starter cash ₹ 8,000, got ${starterInfo.cashText}`);
+  assert(starterInfo.activeBike === 'vayu_150', `Expected starter bike vayu_150, got ${starterInfo.activeBike}`);
+  console.log('✓ Title Screen -> Main Menu & starter ₹8,000 / Vayu 150 verified');
+
+  // Garage: 3D turntable, buy upgrade (stat changes), apply custom paint color
+  await client.eval('document.getElementById("menu-btn-garage").click()');
+  await client.waitUntil('window.gameInstance.state === "GARAGE" && !!window.gameInstance.menuSystem.garageBike', 'Garage 3D bike mounts');
+  const garageBefore = await client.eval(`({
+    bikeName: document.getElementById('garage-bike-name').textContent,
+    speedText: document.querySelector('.garage-stats-card strong')?.textContent,
+    cash: document.getElementById('menu-cash-val').textContent
+  })`);
+  await client.eval('document.getElementById("garage-upg-engine").click()');
+  await client.eval('document.querySelector(".paint-swatch[data-color=\\"#06b6d4\\"]").click()');
+  const garageAfter = await client.eval(`({
+    speedText: document.querySelector('.garage-stats-card strong')?.textContent,
+    cashText: document.getElementById('menu-cash-val').textContent,
+    paintHex: window.gameInstance.menuSystem.garageBike.paintColor
+  })`);
+  assert(garageAfter.speedText !== garageBefore.speedText && garageAfter.cashText.includes('5,500'),
+    `Garage upgrade failed to apply cash/stats: before=${JSON.stringify(garageBefore)}, after=${JSON.stringify(garageAfter)}`);
+  assert(garageAfter.paintHex === '#06b6d4', `Garage paint swatch did not update bike color: ${garageAfter.paintHex}`);
+  console.log(`✓ 3D Garage upgrade (${garageBefore.speedText} -> ${garageAfter.speedText}) & paint swap verified`);
+
+  // Career: verify league locks, 3 objectives displayed, Boss Intro modal, live HUD objectives & ResultsScreen
+  await client.eval('document.getElementById("menu-back-btn").click()');
+  await client.waitUntil('!!document.getElementById("menu-btn-career")', 'Back to Main Menu');
+  await client.eval('document.getElementById("menu-btn-career").click()');
+  await client.waitUntil('!!document.querySelector(".league-section")', 'Career leagues rendered');
+
+  const careerInfo = await client.eval(`({
+    leagues: document.querySelectorAll('.league-section').length,
+    lockedLeagues: document.querySelectorAll('.league-section.league-locked').length,
+    objChips: document.querySelectorAll('.career-race-card .obj-chip').length
+  })`);
+  assert(careerInfo.leagues === 3 && careerInfo.lockedLeagues === 2 && careerInfo.objChips >= 9,
+    `Career leagues/locks/objectives mismatch: ${JSON.stringify(careerInfo)}`);
+
+  // Boss modal & Career launch test on league_coast_r0 (Kabir Dash)
+  await client.eval('document.querySelector(".career-race-btn[data-race-id=\\"league_coast_r0\\"]").click()');
+  await client.waitUntil('!document.getElementById("boss-intro-modal").classList.contains("hidden")', 'Boss Intro card appears');
+  const bossText = await client.eval('document.getElementById("boss-intro-modal").innerText');
+  assert(bossText.includes('Kabir Dash') && bossText.includes('15,000'), `Boss card missing boss info: ${bossText}`);
+
+  // Start Coastline Cup Boss Race, complete 3 laps cleanly, verify live HUD objectives & ResultsScreen
+  await client.eval('document.getElementById("boss-race-btn").click()');
+  await client.waitUntil('window.gameInstance.state === "COUNTDOWN" && document.getElementById("hud-objectives").children.length === 3', 'Career race started with 3 HUD objectives');
+
+  // Grant enough pre-race stars if needed for testing Next Race progression after earning stars cleanly
+  const careerRes = await client.eval(`(async () => {
+    const g = window.gameInstance;
+    g.loop.stop();
+    const lanes = g.spline.getLaneCenters();
+    const totalLen = g.spline.totalLength;
+    let steps = 0;
+    while (g.state !== 'FINISHED' && steps < 24000) {
+      if (g.state === 'COUNTDOWN') { g.update(1 / 60); steps++; continue; }
+      const bike = g.playerBike;
+      const f = g.spline.getFrameAtDistance(bike.s);
+      const f1 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 30));
+      const f2 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 70));
+      const peakC = Math.max(Math.abs(f.curvature), Math.abs(f1.curvature), Math.abs(f2.curvature));
+      const traffic = g.traffic.getActiveList();
+      let bestLane = lanes[0], bestScore = -1e9;
+      for (const ld of lanes) {
+        let minFwd = 120;
+        for (const v of traffic) {
+          let ds = v.s - bike.s;
+          if (ds < -totalLen * 0.5) ds += totalLen;
+          if (ds > totalLen * 0.5) ds -= totalLen;
+          if (ds > -4 && ds < 70 && Math.abs(v.d - ld) < 1.9 && ds < minFwd) minFwd = ds;
+        }
+        const sc = minFwd - Math.abs(ld - bike.d) * 0.15;
+        if (sc > bestScore) { bestScore = sc; bestLane = ld; }
+      }
+      const driftComp = -(f.curvature || 0) * bike.speed * bike.speed * 0.029;
+      const steerCmd = Math.max(-1, Math.min(1, (bestLane - bike.d) * 0.55 + driftComp));
+      let safeMs = 95;
+      if (peakC > 0.004) safeMs = Math.min(safeMs, Math.sqrt(6.6 / (peakC * 0.21)));
+      const brake = bike.speed > safeMs + 2 ? 0.95 : 0;
+      g.input.keys.clear();
+      if (!brake) g.input.keys.add('KeyW'); else g.input.keys.add('KeyS');
+      if (steerCmd < -0.15) g.input.keys.add('KeyA');
+      if (steerCmd > 0.15) g.input.keys.add('KeyD');
+      g.update(1 / 60);
+      steps++;
+      if (steps % 120 === 0) { g.render(0, performance.now()); await new Promise(r => setTimeout(r, 0)); }
+    }
+    g.input.keys.clear();
+    g.render(0, performance.now());
+    g.loop.start();
+    const saved = JSON.parse(localStorage.getItem('ghat_rush_save_v1') || '{}');
+    return {
+      state: g.state,
+      bestLap: document.getElementById('res-best-lap')?.textContent,
+      topSpeed: document.getElementById('res-top-speed')?.textContent,
+      totalScore: document.getElementById('res-total-score')?.textContent,
+      hasNextBtn: !!document.getElementById('btn-next-race'),
+      stars: saved.stars,
+      upgradedTopSpeed: g.playerBike.topSpeedKmh,
+      paint: g.playerBike.paintColor
+    };
+  })()`);
+  assert(careerRes.state === 'FINISHED' && careerRes.stars >= 1,
+    `Career results missing stars / completion: ${JSON.stringify(careerRes)}`);
+  assert(careerRes.upgradedTopSpeed === 187 && careerRes.paint === '#06b6d4',
+    `Upgraded stats/paint did not carry into playerBike: ${JSON.stringify(careerRes)}`);
+  console.log(`✓ Career Coastline Cup completed (stars=${careerRes.stars}, topSpeed=${careerRes.topSpeed}, score=${careerRes.totalScore}, hasNext=${careerRes.hasNextBtn})`);
+
+  if (careerRes.hasNextBtn) {
+    await client.eval('document.getElementById("btn-next-race").click()');
+    await client.waitUntil('window.gameInstance.state === "MENU" || window.gameInstance.state === "COUNTDOWN"', 'Next Race triggered');
+  }
+  await client.eval('window.gameInstance.quitToMenu()');
+  await client.waitUntil('!!document.getElementById("menu-btn-quick")', 'Quit to Main Menu returns to menu');
+
+  await client.eval('document.getElementById("menu-btn-quick").click()');
+  await client.waitUntil('document.querySelectorAll("[data-track-id]").length === 3', 'Quick Race shows all 3 tracks');
+
+  // Verify Monsoon & Neon specific Sky/Scenery visuals
+  await client.navigate(`${BASE_URL}/?track=monsoon_route_1&autostart=1`);
+  const monsoonCheck = await client.eval(`({
+    env: window.gameInstance.sky.envType,
+    hasRain: !!window.gameInstance.sky.rainSystem,
+    waterfalls: window.gameInstance.scenery.waterfalls.length,
+    grip: window.gameInstance.playerBike.surfaceGrip
+  })`);
+  assert(monsoonCheck.env === 'monsoon' && monsoonCheck.hasRain && monsoonCheck.waterfalls === 4 && monsoonCheck.grip < 0.9,
+    `Monsoon env verification failed: ${JSON.stringify(monsoonCheck)}`);
+
+  await client.navigate(`${BASE_URL}/?track=neon_route_1&autostart=1`);
+  const neonCheck = await client.eval(`({
+    env: window.gameInstance.sky.envType,
+    neonStrips: window.gameInstance.scenery.neonGlowMats.length,
+    grip: window.gameInstance.playerBike.surfaceGrip
+  })`);
+  assert(neonCheck.env === 'neon' && neonCheck.neonStrips === 2 && neonCheck.grip < 1.0,
+    `Neon env verification failed: ${JSON.stringify(neonCheck)}`);
+
+  client.assertCleanErrors('Phase 3 checks');
+  console.log('✓ Phase 3 Menu, Career, Boss, 3D Garage, Monsoon & Neon checks passed');
+}
+
 async function main() {
   const newTarget = await openNewTab(`${BASE_URL}/?track=coast_route_1&autostart=1`);
   const client = new CDPClient(newTarget.webSocketDebuggerUrl);
@@ -721,6 +894,8 @@ async function main() {
       await runPhase1Checks(client);
     } else if (PHASE === 2) {
       await runPhase2Checks(client);
+    } else if (PHASE === 3) {
+      await runPhase3Checks(client);
     }
 
     for (let i = 0; i < TRACKS.length; i++) {

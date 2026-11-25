@@ -16,13 +16,25 @@ export class RivalAI {
   }
 
   initRivals() {
-    const rivalConfigs = this.trackData.rivals || [
+    const baseConfigs = this.trackData.rivals || [
       { name: "Raftaar Roy", bike: "vayu_r7", skill: 0.88, color: "#f59e0b", personality: "aggressive" },
       { name: "Zoya Mirza", bike: "chetak_300", skill: 0.84, color: "#06b6d4", personality: "smooth" },
       { name: "Vikram Volt", bike: "trishul_650", skill: 0.80, color: "#10b981", personality: "overtaker" },
       { name: "Tara Torque", bike: "chakra_750", skill: 0.77, color: "#ec4899", personality: "smooth" },
       { name: "Kabir Dash", bike: "vayu_150", skill: 0.74, color: "#8b5cf6", personality: "blocker" }
     ];
+    const rivalConfigs = baseConfigs.map(c => ({ ...c }));
+    if (this.trackData.bossRival) {
+      const boss = this.trackData.bossRival;
+      rivalConfigs[0] = {
+        name: boss.name,
+        bike: boss.bike,
+        skill: Math.max(0.88, rivalConfigs[0].skill || 0.88),
+        color: boss.color || '#ef4444',
+        personality: 'aggressive',
+        isBoss: true
+      };
+    }
 
     // Grid starting offsets: staggered grid positions behind or ahead of start
     const gridD = [-2.5, 2.5, -2.5, 2.5, -2.5];
@@ -189,5 +201,12 @@ export class RivalAI {
       r.bike.d = gridD[idx] || 0;
       r.bike.syncTransform();
     });
+  }
+
+  dispose() {
+    for (const r of this.rivals) {
+      r.bike?.dispose();
+    }
+    this.rivals = [];
   }
 }

@@ -30,6 +30,7 @@ export class HUD {
         <div id="hud-position"><span id="pos-val">1</span><span id="pos-total">/6</span></div>
         <div id="hud-lap">LAP <span id="lap-val">1</span> / <span id="lap-total">3</span></div>
         <div id="hud-timer">00:00.00</div>
+        <div id="hud-objectives" class="hud-objectives hidden"></div>
       </div>
 
       <div id="hud-top-right">
@@ -93,6 +94,7 @@ export class HUD {
     this.lapVal = document.getElementById('lap-val');
     this.lapTotal = document.getElementById('lap-total');
     this.timerVal = document.getElementById('hud-timer');
+    this.objectivesEl = document.getElementById('hud-objectives');
     this.muteBtn = document.getElementById('hud-mute-btn');
     this.pauseBtn = document.getElementById('hud-pause-btn');
     this.nitroFill = document.getElementById('nitro-fill');
@@ -135,6 +137,19 @@ export class HUD {
     if (this.popupContainer) {
       this.popupContainer.innerHTML = '';
     }
+  }
+
+  setObjectives(items = []) {
+    if (!this.objectivesEl) return;
+    if (!items || items.length === 0) {
+      this.objectivesEl.classList.add('hidden');
+      this.objectivesEl.innerHTML = '';
+      return;
+    }
+    this.objectivesEl.classList.remove('hidden');
+    this.objectivesEl.innerHTML = items.map(it =>
+      `<div class="hud-obj-item ${it.done ? 'done' : ''}">${it.done ? '✓' : '○'} ${it.label}</div>`
+    ).join('');
   }
 
   bindTouchControls() {

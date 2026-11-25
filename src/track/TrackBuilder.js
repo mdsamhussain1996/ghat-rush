@@ -2,15 +2,17 @@ import * as THREE from 'three';
 
 /**
  * TrackBuilder — Generates 3D Road Mesh Ribbon along RoadSpline
- * Features realistic asphalt texture, lane markings, rumble strips, and road shoulders.
+ * Supports 'coastal', 'monsoon' (wet asphalt reflection & 2 lanes), and 'neon' (wet dark expressway & 4 lanes).
  */
 export class TrackBuilder {
   constructor(spline, trackData) {
     this.spline = spline;
-    this.trackData = trackData;
-    this.roadWidth = trackData.roadWidth || 14;
-    this.lanes = trackData.lanes || 3;
-    this.stepMeters = 3.0; // Longitudinal resolution
+    this.trackData = trackData || {};
+    this.roadWidth = this.trackData.roadWidth || 14;
+    this.lanes = Math.max(2, this.trackData.lanes || 3);
+    this.envType = this.trackData.environment || 'coastal';
+    this.stepMeters = 4.0;
+    this.mesh = null;
   }
 
   buildRoadMesh() {
@@ -20,14 +22,7 @@ export class TrackBuilder {
     const shoulderWidth = 2.2;
     const totalHalfWidth = halfWidth + shoulderWidth;
 
-    // We'll generate vertices across cross-section:
-    // [-totalHalfWidth, -halfWidth, halfWidth, totalHalfWidth]
-    const crossSections = [
-      -totalHalfWidth,
-      -halfWidth,
-      halfWidth,
-      totalHalfWidth
-    ];
+    const crossSections = [-totalHalfWidth, -halfWidth, halfWidth, totalHalfWidth];
     const numCross = crossSections.length;
 
     const vertexCount = (steps + 1) * numCross;
@@ -43,16 +38,14 @@ export class TrackBuilder {
     for (let i = 0; i <= steps; i++) {
       const s = (i / steps) * totalLength;
       const frame = this.spline.getFrameAtDistance(s);
-      const vProgress = s / 12.0; // Repeat UV every 12m
+      const vProgress = s / 12.0;
 
       for (let j = 0; j < numCross; j++) {
         const d = crossSections[j];
         const isShoulder = Math.abs(d) > halfWidth;
 
-        // Position = centerline + binormal * d
         const pos = frame.position.clone().addScaledVector(frame.binormal, d);
-        // Slightly lower the shoulder edge
-        if (Math.abs(d) > halfWidth) {
+        if (isShoulder) {
           pos.addScaledVector(frame.normal, -0.08);
         }
 
@@ -64,11 +57,9 @@ export class TrackBuilder {
         normals[vIdx * 3 + 1] = frame.normal.y;
         normals[vIdx * 3 + 2] = frame.normal.z;
 
-        const uNorm = (d + totalHalfWidth) / (2 * totalHalfWidth);
-        uvs[uvIdx * 2] = uNorm;
+        uvs[uvIdx * 2] = (d + totalHalfWidth) / (2 * totalHalfWidth);
         uvs[uvIdx * 2 + 1] = vProgress;
 
-        // Vertex coloring: full 1.0 so texture colors and white lines are bright
         if (isShoulder) {
           colors[cIdx * 3] = 0.85;
           colors[cIdx * 3 + 1] = 0.75;
@@ -85,20 +76,16 @@ export class TrackBuilder {
       }
     }
 
-    // Index buffer
     const indices = [];
     for (let i = 0; i < steps; i++) {
       for (let j = 0; j < numCross - 1; j++) {
         const row1 = i * numCross;
         const row2 = (i + 1) * numCross;
-
         const a = row1 + j;
         const b = row1 + j + 1;
         const c = row2 + j;
         const d = row2 + j + 1;
-
-        indices.push(a, b, c);
-        indices.push(b, d, c);
+        indices.push(a, b, c, b, d, c);
       }
     }
 
@@ -109,22 +96,23 @@ export class TrackBuilder {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.setIndex(indices);
 
-    // Create procedural canvas texture for road stripes & asphalt grain
     const roadTexture = this.generateRoadTexture();
     roadTexture.wrapS = THREE.ClampToEdgeWrapping;
     roadTexture.wrapT = THREE.RepeatWrapping;
-    roadTexture.repeat.set(1, 1);
+
+    const isMonsoon = this.envType === 'monsoon';
+    const isNeon = this.envType === 'neon';
 
     const material = new THREE.MeshStandardMaterial({
       map: roadTexture,
-      roughness: 0.75,
-      metalness: 0.15,
+      roughness: isMonsoon ? 0.16 : (isNeon ? 0.22 : 0.75),
+      metalness: isMonsoon ? 0.58 : (isNeon ? 0.64 : 0.15),
       side: THREE.DoubleSide
     });
 
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.receiveShadow = true;
-    return mesh;
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.receiveShadow = true;
+    return this.mesh;
   }
 
   generateRoadTexture() {
@@ -133,73 +121,73 @@ export class TrackBuilder {
     canvas.height = 512;
     const ctx = canvas.getContext('2d');
 
-    // 1. Sandy gravel shoulder edges
-    ctx.fillStyle = '#947858';
+    const isMonsoon = this.envType === 'monsoon';
+    const isNeon = this.envType === 'neon';
+
+    // 1. Shoulder base
+    ctx.fillStyle = isMonsoon ? '#3e4c3a' : (isNeon ? '#1e293b' : '#947858');
     ctx.fillRect(0, 0, 1024, 512);
 
-    // 2. Asphalt highway surface (from 124px to 900px)
+    // 2. Asphalt surface
     const roadLeft = 124;
     const roadRight = 900;
     const roadWidthPx = roadRight - roadLeft;
 
-    ctx.fillStyle = '#282a2f';
+    ctx.fillStyle = isMonsoon ? '#1c2229' : (isNeon ? '#111626' : '#282a2f');
     ctx.fillRect(roadLeft, 0, roadWidthPx, 512);
 
-    // Fine asphalt aggregate noise
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
-    for (let i = 0; i < 4000; i++) {
-      ctx.fillRect(roadLeft + Math.random() * roadWidthPx, Math.random() * 512, 2, 2);
+    // Subtle aggregate & wet puddle streaks
+    ctx.fillStyle = isMonsoon || isNeon ? 'rgba(148, 197, 255, 0.06)' : 'rgba(255, 255, 255, 0.03)';
+    for (let i = 0; i < 3200; i++) {
+      ctx.fillRect(roadLeft + Math.random() * roadWidthPx, Math.random() * 512, 2, isMonsoon || isNeon ? 8 : 2);
     }
 
-    // 3. Tyre Wear Darkening Lines in each of the 3 driving lanes
-    const laneWidth = (roadWidthPx - 28) / 3;
-    const laneCenters = [
-      roadLeft + 14 + laneWidth * 0.5,
-      roadLeft + 14 + laneWidth * 1.5,
-      roadLeft + 14 + laneWidth * 2.5
-    ];
+    // 3. Tyre wear / wet tracks across this.lanes
+    const laneWidth = (roadWidthPx - 28) / this.lanes;
+    ctx.fillStyle = isMonsoon ? 'rgba(8, 12, 18, 0.42)' : 'rgba(15, 16, 20, 0.35)';
+    for (let l = 0; l < this.lanes; l++) {
+      const cx = roadLeft + 14 + laneWidth * (l + 0.5);
+      ctx.fillRect(cx - 34, 0, 20, 512);
+      ctx.fillRect(cx + 14, 0, 20, 512);
+    }
 
-    ctx.fillStyle = 'rgba(15, 16, 20, 0.35)';
-    laneCenters.forEach(cx => {
-      // Left and right tyre paths in lane
-      ctx.fillRect(cx - 38, 0, 22, 512);
-      ctx.fillRect(cx + 16, 0, 22, 512);
-    });
-
-    // 4. Heavy Skid-mark Decals on bends
-    ctx.fillStyle = 'rgba(10, 11, 14, 0.55)';
-    ctx.beginPath();
-    ctx.ellipse(laneCenters[1] + 18, 180, 12, 140, 0.12, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(laneCenters[1] - 22, 220, 10, 110, 0.10, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 5. Red & White checkered rumble strips along inner shoulder boundary
+    // 4. Shoulder rumble strips / neon stripes
     const rumbleWidth = 28;
     for (let y = 0; y < 512; y += 32) {
-      ctx.fillStyle = (y % 64 === 0) ? '#dc2626' : '#f8fafc';
+      if (isNeon) {
+        ctx.fillStyle = (y % 64 === 0) ? '#06b6d4' : '#d946ef';
+      } else {
+        ctx.fillStyle = (y % 64 === 0) ? '#dc2626' : '#f8fafc';
+      }
       ctx.fillRect(roadLeft - rumbleWidth, y, rumbleWidth, 32);
       ctx.fillRect(roadRight, y, rumbleWidth, 32);
     }
 
-    // 6. Solid bright white shoulder boundary lines (with subtle road wear)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    // 5. Outer solid boundary lines
+    ctx.fillStyle = isNeon ? 'rgba(56, 189, 248, 0.95)' : 'rgba(255, 255, 255, 0.95)';
     ctx.fillRect(roadLeft + 4, 0, 10, 512);
     ctx.fillRect(roadRight - 14, 0, 10, 512);
 
-    // 7. Dashed center lane dividers with realistic dashed spacing & wear
-    const div1X = roadLeft + 14 + laneWidth;
-    const div2X = roadLeft + 14 + laneWidth * 2;
-
-    ctx.fillStyle = 'rgba(248, 250, 252, 0.92)';
-    for (let y = 0; y < 512; y += 64) {
-      ctx.fillRect(div1X - 5, y + 14, 10, 36);
-      ctx.fillRect(div2X - 5, y + 14, 10, 36);
+    // 6. Dashed center lane dividers matching actual lane count
+    ctx.fillStyle = isMonsoon ? 'rgba(250, 204, 21, 0.92)' : 'rgba(248, 250, 252, 0.92)';
+    for (let d = 1; d < this.lanes; d++) {
+      const divX = roadLeft + 14 + laneWidth * d;
+      for (let y = 0; y < 512; y += 64) {
+        ctx.fillRect(divX - 5, y + 14, 10, 36);
+      }
     }
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.needsUpdate = true;
     return tex;
+  }
+
+  dispose(scene) {
+    if (!this.mesh) return;
+    scene?.remove(this.mesh);
+    this.mesh.geometry?.dispose();
+    this.mesh.material?.map?.dispose();
+    this.mesh.material?.dispose();
+    this.mesh = null;
   }
 }

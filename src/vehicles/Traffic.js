@@ -578,4 +578,16 @@ export class Traffic {
     }
     this.activeVehicles = [];
   }
+
+  dispose() {
+    for (const v of this.vehicles) {
+      this.scene?.remove(v.group);
+      v.group?.traverse(child => {
+        child.geometry?.dispose();
+      });
+    }
+    Object.values(this.materials || {}).forEach(m => m?.dispose());
+    this.vehicles = [];
+    this.activeVehicles = [];
+  }
 }
