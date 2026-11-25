@@ -67,7 +67,10 @@ export class RivalAI {
           wheelie: false
         },
         lanePreference: gridD[idx] || 0,
-        overtakeOffset: 0
+        overtakeOffset: 0,
+        mistakeTimer: 0,
+        mistakeOffset: 0,
+        mistakeSpeedMult: 1.0
       });
     });
   }
@@ -91,14 +94,36 @@ export class RivalAI {
       const peakCurv = peakCurvObj.curvature || 0;
       const isCurving = Math.abs(peakCurv) > 0.004;
 
+      // Occasional line/braking mistakes scaled by (1 - skill)
+      if (r.mistakeTimer > 0) {
+        r.mistakeTimer = Math.max(0, r.mistakeTimer - dt);
+        if (r.mistakeTimer === 0) {
+          r.mistakeOffset = 0;
+          r.mistakeSpeedMult = 1.0;
+        }
+      } else if (isCurving && bike.speed > 38 && Math.random() < (1 - r.skill) * 0.32 * dt) {
+        r.mistakeTimer = 0.85;
+        r.mistakeOffset = (Math.random() < 0.5 ? -1 : 1) * (1.0 + (1 - r.skill) * 1.4);
+        r.mistakeSpeedMult = 1.06;
+      }
+
+      // Signed distance relative to player (+ when rival ahead of player)
+      let playerDist = bike.s - playerBike.s;
+      if (playerDist < -totalLen * 0.5) playerDist += totalLen;
+      if (playerDist > totalLen * 0.5) playerDist -= totalLen;
+
       // Desired lateral offset (apex inside: negative binormal when curv > 0)
       let targetD = r.lanePreference;
       if (isCurving) {
         const apexSide = -Math.sign(peakCurv);
         targetD = apexSide * Math.max(1.2, halfW - 2.6);
+      } else if (r.personality === 'blocker' && playerDist > 6 && playerDist < 45) {
+        // Blocker covers player's lane on straightaways
+        targetD = THREE.MathUtils.lerp(targetD, playerBike.d, 0.82);
       }
+      targetD += r.mistakeOffset;
 
-      // 2. Traffic Avoidance & Overtaking
+      // 2. Traffic Avoidance & Overtaker Slipstream
       const obstacles = [...trafficList, playerBike];
       let obstacleAhead = null;
       let minObstacleDist = 999;
@@ -117,14 +142,20 @@ export class RivalAI {
         }
       }
 
+      let overtakingBoost = false;
       if (obstacleAhead) {
-        // Choose clearest lane away from obstacle
-        const clearLanes = lanes.filter(ld => Math.abs(ld - obstacleAhead.d) > 2.0);
-        if (clearLanes.length > 0) {
-          targetD = clearLanes.reduce((a, b) => Math.abs(a - bike.d) < Math.abs(b - bike.d) ? a : b);
+        if (r.personality === 'overtaker' && minObstacleDist > 13 && minObstacleDist < 32 && bike.speed > 26) {
+          // Stay tucked behind briefly for slipstream before pulling out at < 13m
+          targetD = obstacleAhead.d;
         } else {
-          const steerSide = obstacleAhead.d > 0 ? -1 : 1;
-          targetD = obstacleAhead.d + steerSide * 2.5;
+          if (r.personality === 'overtaker') overtakingBoost = true;
+          const clearLanes = lanes.filter(ld => Math.abs(ld - obstacleAhead.d) > 2.0);
+          if (clearLanes.length > 0) {
+            targetD = clearLanes.reduce((a, b) => Math.abs(a - bike.d) < Math.abs(b - bike.d) ? a : b);
+          } else {
+            const steerSide = obstacleAhead.d > 0 ? -1 : 1;
+            targetD = obstacleAhead.d + steerSide * 2.5;
+          }
         }
       }
       targetD = Math.max(-(halfW - 1.5), Math.min(halfW - 1.5, targetD));
@@ -134,22 +165,19 @@ export class RivalAI {
       const driftVel = currentCurv * (bike.speed * bike.speed) * 0.21;
       const counterSteer = -driftVel / Math.max(1.0, gripVel);
       const dError = targetD - bike.d;
-      ctrl.steer = Math.max(-1.0, Math.min(1.0, dError * 0.45 + counterSteer));
+      ctrl.steer = Math.max(-1.0, Math.min(1.0, dError * 0.48 + counterSteer));
 
-      // 4. Speed control & Braking based on real safe cornering speed
+      // 4. Speed control & Personality Braking
       const speedKmh = bike.getSpeedKmh();
       let curveSpeedLimit = bike.topSpeedKmh;
 
       if (Math.abs(peakCurv) > 0.004) {
         const safeCornerKmh = Math.sqrt((gripVel * 0.90) / (Math.abs(peakCurv) * 0.21)) * 3.6;
-        curveSpeedLimit = Math.min(bike.topSpeedKmh, safeCornerKmh * (0.86 + r.skill * 0.14));
+        const personalityFactor = r.personality === 'aggressive' ? 1.05 : 1.0;
+        curveSpeedLimit = Math.min(bike.topSpeedKmh, safeCornerKmh * (0.86 + r.skill * 0.14) * personalityFactor * r.mistakeSpeedMult);
       }
 
       // Subtle rubber-banding: ±5%
-      let playerDist = bike.s - playerBike.s;
-      if (playerDist < -totalLen * 0.5) playerDist += totalLen;
-      if (playerDist > totalLen * 0.5) playerDist -= totalLen;
-
       let rubberBand = 1.0;
       if (playerDist < -50) rubberBand = 1.05;
       else if (playerDist > 70) rubberBand = 0.95;
@@ -164,8 +192,9 @@ export class RivalAI {
         ctrl.brake = 0;
       }
 
-      // 5. Nitro usage on straights
-      if (!isCurving && speedKmh > 165 && bike.nitro > 1.0 && Math.random() < 0.05) {
+      // 5. Nitro usage by personality
+      const nitroChance = r.personality === 'aggressive' ? 0.09 : 0.05;
+      if ((!isCurving && speedKmh > 155 && bike.nitro > 1.0 && Math.random() < nitroChance) || (overtakingBoost && bike.nitro > 0.6)) {
         ctrl.nitro = true;
       } else {
         ctrl.nitro = false;
@@ -196,6 +225,9 @@ export class RivalAI {
     const gridD = [-2.5, 2.5, -2.5, 2.5, -2.5];
     const gridS = [18, 12, 6, 0, -6];
     this.rivals.forEach((r, idx) => {
+      r.mistakeTimer = 0;
+      r.mistakeOffset = 0;
+      r.mistakeSpeedMult = 1.0;
       r.bike.reset();
       r.bike.s = Math.max(0, gridS[idx] || 0);
       r.bike.d = gridD[idx] || 0;

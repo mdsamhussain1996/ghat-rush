@@ -876,6 +876,101 @@ async function runPhase3Checks(client) {
   console.log('✓ Phase 3 Menu, Career, Boss, 3D Garage, Monsoon & Neon checks passed');
 }
 
+async function runPhase4Checks(client) {
+  console.log('--- Phase 4 Functional Checks (Minimap, Horizon Popups, Gaps/Banners, Sweep, AI, Audio) ---');
+  await client.navigate(`${BASE_URL}/?track=coast_route_1&autostart=1`);
+  client.clearErrors();
+  await client.clickCenter();
+
+  const p4 = await client.eval(`(() => {
+    const g = window.gameInstance;
+    g.loop.stop();
+    while (g.state === 'COUNTDOWN') g.update(1 / 60);
+
+    // 1. Projected spline minimap cached + canvas rendered
+    g.hud.setTrackSpline(g.spline);
+    g.hud.renderMiniMap(g.playerBike, g.rivalAI.rivals.map(r => r.bike));
+    const hasCache = !!g.hud._minimapBaseCanvas && !!g.hud._minimapProj;
+    const img = g.hud.minimapCtx.getImageData(40, 20, 80, 50).data;
+    let nonZeroPixels = 0;
+    for (let i = 3; i < img.length; i += 4) {
+      if (img[i] > 0) nonZeroPixels++;
+    }
+
+    // 2. Non-stacking single near-miss popup positioned above horizon
+    g.hud.clearPopups();
+    g.playerBike.onNearMiss(1);
+    g.playerBike.onNearMiss(2);
+    g.playerBike.onNearMiss(3);
+    const nmEls = document.querySelectorAll('#hud-center-popups .hud-popup-near-miss');
+    const nmCount = nmEls.length;
+    const nmText = nmEls[0]?.textContent || '';
+    const nmRect = document.getElementById('hud-center-popups').getBoundingClientRect();
+
+    // 3. Live Gap & FINAL LAP & WRONG WAY banner
+    g.playerBike.s = 120;
+    g.playerBike.lap = g.totalLaps;
+    g.update(1 / 60);
+    const gapText = document.getElementById('hud-gaps')?.textContent || '';
+    const finalLapBanner = document.getElementById('hud-race-banner')?.textContent || '';
+    const finalLapVisible = !document.getElementById('hud-race-banner')?.classList.contains('hidden');
+
+    g.playerBike.isWrongWay = true;
+    g.update(1 / 60);
+    const wrongWayBanner = document.getElementById('hud-race-banner')?.textContent || '';
+    g.playerBike.isWrongWay = false;
+
+    // 4. Blocker AI personality covers player's lane on straights
+    const blocker = g.rivalAI.rivals.find(r => r.personality === 'blocker');
+    let blockerBeforeD = 0, blockerAfterD = 0;
+    if (blocker) {
+      blocker.bike.s = 320;
+      blocker.bike.d = -3.8;
+      blocker.bike.speed = 45;
+      g.playerBike.s = 300;
+      g.playerBike.d = 3.5;
+      g.playerBike.speed = 48;
+      blockerBeforeD = blocker.bike.d;
+      for (let i = 0; i < 45; i++) g.rivalAI.update(1 / 60, g.playerBike, []);
+      blockerAfterD = blocker.bike.d;
+    }
+
+    // 5. Finish sweep camera orbits around playerBike on FINISHED
+    const camPosBefore = g.cameraRig.camera.position.clone();
+    g.cameraRig.updateFinishSweep(1 / 60, g.playerBike, 0.2);
+    const camPos0 = g.cameraRig.camera.position.clone();
+    for (let i = 0; i < 60; i++) g.cameraRig.updateFinishSweep(1 / 60, g.playerBike, 0.2 + i * 0.05);
+    const camSweepDist = camPos0.distanceTo(g.cameraRig.camera.position);
+
+    g.loop.start();
+    return {
+      hasCache,
+      nonZeroPixels,
+      nmCount,
+      nmText,
+      nmTopRatio: nmRect.top / window.innerHeight,
+      gapText,
+      finalLapBanner,
+      finalLapVisible,
+      wrongWayBanner,
+      blockerMovedRight: blocker ? blockerAfterD > blockerBeforeD + 0.5 : true,
+      camSweepDist
+    };
+  })()`);
+
+  assert(p4.hasCache && p4.nonZeroPixels > 100, `Minimap spline cache missing/empty: ${JSON.stringify(p4)}`);
+  assert(p4.nmCount === 1 && p4.nmText.includes('COMBO ×3') && p4.nmTopRatio < 0.16,
+    `Near-miss popup stacking or position check failed: ${JSON.stringify(p4)}`);
+  assert(p4.gapText.length > 0 && p4.finalLapVisible && p4.finalLapBanner.includes('FINAL LAP'),
+    `Live gap or FINAL LAP banner missing: ${JSON.stringify(p4)}`);
+  assert(p4.wrongWayBanner.includes('WRONG WAY'), `WRONG WAY banner missing: ${p4.wrongWayBanner}`);
+  assert(p4.blockerMovedRight, 'Blocker AI must cover player lane on straight');
+  assert(p4.camSweepDist > 1.0, `Finish sweep camera must orbit smoothly, moved ${p4.camSweepDist}`);
+
+  client.assertCleanErrors('Phase 4 checks');
+  console.log('✓ Phase 4 Minimap, Horizon Popups, Gaps/Banners, Finish Sweep & AI Personalities passed');
+}
+
 async function main() {
   const newTarget = await openNewTab(`${BASE_URL}/?track=coast_route_1&autostart=1`);
   const client = new CDPClient(newTarget.webSocketDebuggerUrl);
@@ -896,6 +991,8 @@ async function main() {
       await runPhase2Checks(client);
     } else if (PHASE === 3) {
       await runPhase3Checks(client);
+    } else if (PHASE === 4) {
+      await runPhase4Checks(client);
     }
 
     for (let i = 0; i < TRACKS.length; i++) {

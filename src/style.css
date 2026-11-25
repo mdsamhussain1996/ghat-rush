@@ -144,16 +144,17 @@ html, body {
   backdrop-filter: blur(8px);
 }
 
-/* Center Popups (Matching 3D styled Near Miss in concept_coast.png) */
+/* Center Popups — positioned cleanly above the horizon */
 #hud-center-popups {
   position: absolute;
-  top: 22%;
+  top: 6%;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  pointer-events: none;
 }
 
 .hud-popup {
@@ -168,18 +169,57 @@ html, body {
 }
 
 .popup-title {
-  font-size: 48px;
+  font-size: 34px;
   font-weight: 900;
   letter-spacing: 2px;
   text-transform: uppercase;
 }
 
 .popup-subtitle {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 900;
   letter-spacing: 2px;
   text-transform: uppercase;
   margin-top: 2px;
+}
+
+.hud-gaps {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #38bdf8;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+}
+
+.race-banner {
+  position: absolute;
+  top: 15%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 20px;
+  border-radius: 999px;
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.race-banner.hidden {
+  display: none;
+}
+
+.banner-final {
+  background: rgba(245, 158, 11, 0.92);
+  color: #0f172a;
+  box-shadow: 0 0 24px rgba(245, 158, 11, 0.65);
+}
+
+.banner-wrong {
+  background: rgba(239, 68, 68, 0.94);
+  color: #ffffff;
+  box-shadow: 0 0 24px rgba(239, 68, 68, 0.8);
 }
 
 .hud-popup-near-miss .popup-title {

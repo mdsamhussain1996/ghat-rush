@@ -178,6 +178,27 @@ export class CameraRig {
     }
   }
 
+  updateFinishSweep(dt, playerBike, finishElapsed = 0) {
+    if (!playerBike || !playerBike.group || !this.spline) return;
+    const frame = this.spline.getFrameAtDistance(playerBike.s);
+    const bikePos = playerBike.group.position;
+    const angle = Math.min(2.4, finishElapsed * 0.72);
+    const radius = 4.3;
+
+    const targetPos = bikePos.clone()
+      .addScaledVector(frame.tangent, -Math.cos(angle) * radius)
+      .addScaledVector(frame.binormal, Math.sin(angle) * radius)
+      .addScaledVector(frame.normal, 1.45);
+    const targetLook = bikePos.clone().addScaledVector(frame.normal, 0.85);
+
+    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, 62, 4.0 * dt);
+    this.camera.updateProjectionMatrix();
+    this.currentPos.lerp(targetPos, Math.min(1.0, 6.0 * dt));
+    this.currentLookAt.lerp(targetLook, Math.min(1.0, 8.0 * dt));
+    this.camera.position.copy(this.currentPos);
+    this.camera.lookAt(this.currentLookAt);
+  }
+
   reset(playerBike) {
     if (!playerBike) return;
     this.currentPos.set(0, 0, 0);

@@ -58,6 +58,7 @@ export class Bike {
     this.draftTimer = 0;
     this.draftPersistTimer = 0; // Must persist 0.5s before bonus triggers
     this.isSliding = false;
+    this.isWrongWay = false;
     this.slideAngle = 0;
     this.isCrashed = false;
     this.crashTimer = 0;
@@ -561,7 +562,7 @@ export class Bike {
 
     // Audio update for player
     if (this.isPlayer) {
-      audio.updateEngine(this.rpmRatio, this.getSpeedKmh(), this.isNitro);
+      audio.updateEngine(this.rpmRatio, this.getSpeedKmh(), this.isNitro, this.gripDemandRatio || 0);
     }
 
     this.syncTransform();
@@ -577,8 +578,9 @@ export class Bike {
     }
 
     if (targetGear !== this.gear) {
+      const isUpshift = targetGear > this.gear;
       this.gear = targetGear;
-      if (this.isPlayer) audio.playGearShift();
+      if (this.isPlayer) audio.playGearShift(isUpshift);
     }
 
     const minS = gearMaxSpeeds[this.gear - 1] || 0;
@@ -794,6 +796,7 @@ export class Bike {
     this.cleanMeters = 0;
     this.rider.resetPose();
     this.isSliding = false;
+    this.isWrongWay = false;
     this.isNitro = false;
     this.isDrafting = false;
     this.draftTimer = 0;

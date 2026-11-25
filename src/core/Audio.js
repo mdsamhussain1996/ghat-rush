@@ -21,10 +21,20 @@ export class SoundEngine {
     this.engineFilter = null;
     this.engineRunning = false;
 
-    // Wind synth nodes
+    // Wind & Tyre Squeal & Rain Ambience synth nodes
     this.windSource = null;
     this.windGain = null;
     this.windFilter = null;
+
+    this.squealOsc = null;
+    this.squealFilter = null;
+    this.squealGain = null;
+
+    this.rainSource = null;
+    this.rainFilter = null;
+    this.rainGain = null;
+    this.envAmbience = 'coastal';
+    this.shiftEndTime = 0;
 
     // BGM loop timer
     this.bgmTimer = null;
@@ -97,6 +107,14 @@ export class SoundEngine {
       this.windGain.gain.setValueAtTime(this.windGain.gain.value, t);
       this.windGain.gain.linearRampToValueAtTime(this.paused ? 0 : 0.001, t + 0.08);
     }
+    if (this.squealGain) {
+      this.squealGain.gain.cancelScheduledValues(t);
+      this.squealGain.gain.setValueAtTime(0, t);
+    }
+    if (this.rainGain) {
+      this.rainGain.gain.cancelScheduledValues(t);
+      this.rainGain.gain.linearRampToValueAtTime(this.paused ? 0.01 : (this.envAmbience === 'monsoon' ? 0.11 : 0), t + 0.12);
+    }
     if (this.musicGain) {
       this.musicGain.gain.cancelScheduledValues(t);
       this.musicGain.gain.setValueAtTime(this.musicGain.gain.value, t);
@@ -164,7 +182,70 @@ export class SoundEngine {
     whiteNoise.start(t);
     this.windSource = whiteNoise;
 
+    // Continuous Tyre Squeal synth (modulated cleanly when cornering near grip limit)
+    this.squealOsc = this.ctx.createOscillator();
+    this.squealOsc.type = 'sawtooth';
+    this.squealOsc.frequency.setValueAtTime(880, t);
+    this.squealFilter = this.ctx.createBiquadFilter();
+    this.squealFilter.type = 'bandpass';
+    this.squealFilter.frequency.setValueAtTime(1200, t);
+    this.squealFilter.Q.setValueAtTime(3.2, t);
+    this.squealGain = this.ctx.createGain();
+    this.squealGain.gain.setValueAtTime(0, t);
+    this.squealOsc.connect(this.squealFilter);
+    this.squealFilter.connect(this.squealGain);
+    this.squealGain.connect(this.sfxGain);
+    this.squealOsc.start(t);
+
     this.engineRunning = true;
+  }
+
+  setEnvironmentAmbience(envType = 'coastal') {
+    this.envAmbience = envType || 'coastal';
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+
+    if (this.envAmbience === 'monsoon') {
+      if (!this.rainSource) {
+        const bufLen = this.ctx.sampleRate * 2;
+        const rainBuf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+        const ch = rainBuf.getChannelData(0);
+        for (let i = 0; i < bufLen; i++) {
+          ch[i] = Math.random() * 2 - 1;
+        }
+        const src = this.ctx.createBufferSource();
+        src.buffer = rainBuf;
+        src.loop = true;
+
+        this.rainFilter = this.ctx.createBiquadFilter();
+        this.rainFilter.type = 'bandpass';
+        this.rainFilter.frequency.setValueAtTime(1450, t);
+        this.rainFilter.Q.setValueAtTime(0.7, t);
+
+        this.rainGain = this.ctx.createGain();
+        this.rainGain.gain.setValueAtTime(this.paused ? 0.01 : 0.11, t);
+
+        src.connect(this.rainFilter);
+        this.rainFilter.connect(this.rainGain);
+        this.rainGain.connect(this.masterGain);
+        src.start(t);
+        this.rainSource = src;
+      } else if (this.rainGain) {
+        this.rainGain.gain.setTargetAtTime(this.paused ? 0.01 : 0.11, t, 0.15);
+      }
+    } else if (this.rainSource) {
+      const src = this.rainSource;
+      this.rainSource = null;
+      if (this.rainGain) {
+        this.rainGain.gain.cancelScheduledValues(t);
+        this.rainGain.gain.setValueAtTime(this.rainGain.gain.value, t);
+        this.rainGain.gain.linearRampToValueAtTime(0, t + 0.25);
+      }
+      try {
+        src.stop(t + 0.28);
+        src.onended = () => { try { src.disconnect(); } catch (e) {} };
+      } catch (e) {}
+    }
   }
 
   stopEngine() {
@@ -175,10 +256,12 @@ export class SoundEngine {
     const osc1 = this.engineOsc1;
     const osc2 = this.engineOsc2;
     const wind = this.windSource;
+    const squeal = this.squealOsc;
 
     this.engineOsc1 = null;
     this.engineOsc2 = null;
     this.windSource = null;
+    this.squealOsc = null;
 
     if (this.engineGain) {
       this.engineGain.gain.cancelScheduledValues(t);
@@ -190,8 +273,12 @@ export class SoundEngine {
       this.windGain.gain.setValueAtTime(this.windGain.gain.value, t);
       this.windGain.gain.linearRampToValueAtTime(0, t + 0.3);
     }
+    if (this.squealGain) {
+      this.squealGain.gain.cancelScheduledValues(t);
+      this.squealGain.gain.setValueAtTime(0, t);
+    }
 
-    [osc1, osc2, wind].forEach(node => {
+    [osc1, osc2, wind, squeal].forEach(node => {
       if (!node) return;
       try {
         node.stop(t + 0.31);
@@ -202,15 +289,19 @@ export class SoundEngine {
     });
   }
 
-  updateEngine(rpmRatio, speedKmh, isNitro = false) {
+  updateEngine(rpmRatio, speedKmh, isNitro = false, gripDemandRatio = 0) {
     if (!this.ctx || !this.engineRunning || this.paused) return;
     if (!this.engineOsc1 || !this.engineOsc2 || !this.engineFilter) return;
     const t = this.ctx.currentTime;
 
+    // Smooth upshift pitch drop followed by smooth recovery
+    const shiftDrop = this.shiftEndTime > t ? 0.28 * ((this.shiftEndTime - t) / 0.22) : 0;
+    const effectiveRpm = Math.max(0.12, rpmRatio * (1 - shiftDrop));
+
     // RPM frequency scaling: 42 Hz (idle) up to ~322 Hz (redline)
-    const baseFreq = 42 + rpmRatio * 280;
+    const baseFreq = 42 + effectiveRpm * 280;
     const harmonicFreq = baseFreq * 2.2;
-    const filterFreq = 450 + rpmRatio * 2400 + (isNitro ? 1200 : 0);
+    const filterFreq = 450 + effectiveRpm * 2400 + (isNitro ? 1200 : 0);
 
     this.engineOsc1.frequency.setTargetAtTime(baseFreq, t, 0.04);
     this.engineOsc2.frequency.setTargetAtTime(harmonicFreq, t, 0.04);
@@ -223,12 +314,25 @@ export class SoundEngine {
       this.windGain.gain.setTargetAtTime(windVol, t, 0.08);
       this.windFilter.frequency.setTargetAtTime(windFreq, t, 0.08);
     }
+
+    // Tyre squeal scaling near corner grip limit
+    if (this.squealGain && this.squealOsc) {
+      const activeSqueal = gripDemandRatio > 0.82 && speedKmh > 75;
+      const squealVol = activeSqueal ? Math.min(0.14, (gripDemandRatio - 0.82) * 0.45) : 0;
+      this.squealGain.gain.setTargetAtTime(squealVol, t, 0.05);
+      if (activeSqueal) {
+        this.squealOsc.frequency.setTargetAtTime(860 + Math.min(360, gripDemandRatio * 240), t, 0.05);
+      }
+    }
   }
 
   // --- Discrete Sound Effects ---
-  playGearShift() {
+  playGearShift(isUpshift = true) {
     if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
+    if (isUpshift) {
+      this.shiftEndTime = t + 0.22;
+    }
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();

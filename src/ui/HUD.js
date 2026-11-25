@@ -30,6 +30,7 @@ export class HUD {
         <div id="hud-position"><span id="pos-val">1</span><span id="pos-total">/6</span></div>
         <div id="hud-lap">LAP <span id="lap-val">1</span> / <span id="lap-total">3</span></div>
         <div id="hud-timer">00:00.00</div>
+        <div id="hud-gaps" class="hud-gaps">PACK LEADER</div>
         <div id="hud-objectives" class="hud-objectives hidden"></div>
       </div>
 
@@ -42,6 +43,7 @@ export class HUD {
       </div>
 
       <div id="hud-center-popups"></div>
+      <div id="hud-race-banner" class="race-banner hidden">FINAL LAP!</div>
 
       <div id="hud-corner-warning" class="corner-warning hidden">
         <span class="cw-chevrons">‹‹</span>
@@ -94,8 +96,18 @@ export class HUD {
     this.lapVal = document.getElementById('lap-val');
     this.lapTotal = document.getElementById('lap-total');
     this.timerVal = document.getElementById('hud-timer');
+    this.gapsEl = document.getElementById('hud-gaps');
+    this.raceBannerEl = document.getElementById('hud-race-banner');
     this.objectivesEl = document.getElementById('hud-objectives');
     this.muteBtn = document.getElementById('hud-mute-btn');
+    this.activeNearMissEl = null;
+    this.nearMissFadeTimeout = null;
+    this.nearMissRemoveTimeout = null;
+    this.finalLapBannerTimer = 0;
+    this._finalLapShownFor = -1;
+    this._cachedSpline = null;
+    this._minimapBaseCanvas = null;
+    this._minimapProj = null;
     this.pauseBtn = document.getElementById('hud-pause-btn');
     this.nitroFill = document.getElementById('nitro-fill');
     this.speedoVal = document.getElementById('speedo-val');
@@ -134,6 +146,12 @@ export class HUD {
 
   clearPopups() {
     this.slipstreamCooldown = 0;
+    this.finalLapBannerTimer = 0;
+    this._finalLapShownFor = -1;
+    if (this.nearMissFadeTimeout) clearTimeout(this.nearMissFadeTimeout);
+    if (this.nearMissRemoveTimeout) clearTimeout(this.nearMissRemoveTimeout);
+    this.activeNearMissEl = null;
+    if (this.raceBannerEl) this.raceBannerEl.classList.add('hidden');
     if (this.popupContainer) {
       this.popupContainer.innerHTML = '';
     }
@@ -184,6 +202,37 @@ export class HUD {
   }
 
   showPopup(title, subtitle, type = 'near-miss') {
+    if (type === 'near-miss') {
+      if (this.nearMissFadeTimeout) clearTimeout(this.nearMissFadeTimeout);
+      if (this.nearMissRemoveTimeout) clearTimeout(this.nearMissRemoveTimeout);
+
+      let el = this.activeNearMissEl;
+      if (!el || !el.parentNode) {
+        el = document.createElement('div');
+        el.className = 'hud-popup hud-popup-near-miss';
+        el.innerHTML = `
+          <div class="popup-title"></div>
+          <div class="popup-subtitle"></div>
+        `;
+        this.popupContainer.appendChild(el);
+        this.activeNearMissEl = el;
+      }
+      el.classList.remove('fade-out');
+      el.querySelector('.popup-title').textContent = title;
+      const subEl = el.querySelector('.popup-subtitle');
+      subEl.textContent = subtitle || '';
+      subEl.style.display = subtitle ? 'block' : 'none';
+
+      this.nearMissFadeTimeout = setTimeout(() => {
+        el.classList.add('fade-out');
+        this.nearMissRemoveTimeout = setTimeout(() => {
+          el.remove();
+          if (this.activeNearMissEl === el) this.activeNearMissEl = null;
+        }, 350);
+      }, 1250);
+      return;
+    }
+
     const el = document.createElement('div');
     el.className = `hud-popup hud-popup-${type}`;
     el.innerHTML = `
@@ -201,18 +250,57 @@ export class HUD {
   update(dt, playerBike, rivalsList = [], raceTime = 0, totalLaps = 3) {
     if (!playerBike) return;
 
-    // 1. Position & Lap
+    // 1. Position, Lap & Live Gaps
+    const totalLen = playerBike.spline.totalLength;
+    const progressOf = (b) => ((b.lap - 1) * totalLen + b.s);
     const allRacers = [playerBike, ...rivalsList];
-    allRacers.sort((a, b) => {
-      if (a.lap !== b.lap) return b.lap - a.lap;
-      return b.s - a.s;
-    });
+    allRacers.sort((a, b) => progressOf(b) - progressOf(a));
 
-    const playerPos = allRacers.indexOf(playerBike) + 1;
+    const playerIdx = allRacers.indexOf(playerBike);
+    const playerPos = playerIdx + 1;
     this.posVal.innerText = playerPos;
     this.posTotal.innerText = `/${allRacers.length}`;
     this.lapVal.innerText = Math.min(totalLaps, playerBike.lap);
     if (this.lapTotal) this.lapTotal.innerText = totalLaps;
+
+    if (this.gapsEl) {
+      const refSpeed = Math.max(20, playerBike.speed);
+      const pProg = progressOf(playerBike);
+      const ahead = playerIdx > 0 ? allRacers[playerIdx - 1] : null;
+      const behind = playerIdx < allRacers.length - 1 ? allRacers[playerIdx + 1] : null;
+      const parts = [];
+      if (ahead) {
+        const dtAhead = Math.max(0.1, (progressOf(ahead) - pProg) / refSpeed);
+        parts.push(`▲ -${dtAhead.toFixed(1)}s`);
+      } else {
+        parts.push('★ P1 LEADER');
+      }
+      if (behind) {
+        const dtBehind = Math.max(0.1, (pProg - progressOf(behind)) / refSpeed);
+        parts.push(`▼ +${dtBehind.toFixed(1)}s`);
+      }
+      this.gapsEl.textContent = parts.join('  ·  ');
+    }
+
+    // FINAL LAP / WRONG WAY Banners
+    if (playerBike.lap === totalLaps && totalLaps >= 2 && this._finalLapShownFor !== totalLaps) {
+      this._finalLapShownFor = totalLaps;
+      this.finalLapBannerTimer = 2.6;
+    }
+    if (this.finalLapBannerTimer > 0) {
+      this.finalLapBannerTimer = Math.max(0, this.finalLapBannerTimer - dt);
+    }
+    if (this.raceBannerEl) {
+      if (playerBike.isWrongWay) {
+        this.raceBannerEl.textContent = 'WRONG WAY!';
+        this.raceBannerEl.className = 'race-banner banner-wrong';
+      } else if (this.finalLapBannerTimer > 0) {
+        this.raceBannerEl.textContent = 'FINAL LAP!';
+        this.raceBannerEl.className = 'race-banner banner-final';
+      } else {
+        this.raceBannerEl.className = 'race-banner hidden';
+      }
+    }
 
     // 2. Race Timer
     const mins = Math.floor(raceTime / 60);
@@ -289,61 +377,112 @@ export class HUD {
     this.cornerWarningEl.className = `corner-warning severity-${activeCorner.severity || 1}`;
   }
 
+  setTrackSpline(spline) {
+    if (!spline || !spline.samples || spline.samples.length === 0) return;
+    this._cachedSpline = spline;
+    const w = this.minimapCanvas.width;
+    const h = this.minimapCanvas.height;
+
+    const base = document.createElement('canvas');
+    base.width = w;
+    base.height = h;
+    const ctx = base.getContext('2d');
+
+    // Background capsule
+    ctx.fillStyle = 'rgba(18, 24, 38, 0.78)';
+    ctx.beginPath();
+    ctx.roundRect(4, 4, w - 8, h - 8, 12);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Compute XZ bounds
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const sample of spline.samples) {
+      const p = sample.position;
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+
+    const spanX = Math.max(10, maxX - minX);
+    const spanZ = Math.max(10, maxZ - minZ);
+    const padX = 16;
+    const padY = 14;
+    const scale = Math.min((w - padX * 2) / spanX, (h - padY * 2) / spanZ);
+    const offX = (w - spanX * scale) * 0.5 - minX * scale;
+    const offY = (h - spanZ * scale) * 0.5 - minZ * scale;
+
+    this._minimapProj = (x, z) => ({
+      x: x * scale + offX,
+      y: z * scale + offY
+    });
+
+    // Draw outer track shadow + inner spline road ribbon
+    ctx.beginPath();
+    for (let i = 0; i < spline.samples.length; i += 4) {
+      const pt = this._minimapProj(spline.samples[i].position.x, spline.samples[i].position.z);
+      if (i === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    }
+    ctx.closePath();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(2, 6, 23, 0.9)';
+    ctx.lineWidth = 7;
+    ctx.stroke();
+    ctx.strokeStyle = '#64748b';
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+
+    // Start/Finish marker tick
+    const startPt = this._minimapProj(spline.samples[0].position.x, spline.samples[0].position.z);
+    ctx.fillStyle = '#facc15';
+    ctx.fillRect(startPt.x - 2, startPt.y - 2, 4, 4);
+
+    this._minimapBaseCanvas = base;
+  }
+
   renderMiniMap(playerBike, rivalsList) {
+    if (!playerBike?.spline) return;
+    if (this._cachedSpline !== playerBike.spline || !this._minimapBaseCanvas) {
+      this.setTrackSpline(playerBike.spline);
+    }
+
     const ctx = this.minimapCtx;
     const w = this.minimapCanvas.width;
     const h = this.minimapCanvas.height;
 
     ctx.clearRect(0, 0, w, h);
+    if (this._minimapBaseCanvas) {
+      ctx.drawImage(this._minimapBaseCanvas, 0, 0);
+    }
 
-    // Background capsule
-    ctx.fillStyle = 'rgba(18, 24, 38, 0.7)';
-    ctx.beginPath();
-    ctx.roundRect(4, 4, w - 8, h - 8, 12);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    const proj = this._minimapProj;
+    if (!proj) return;
 
-    // Road ribbon track shape
-    ctx.beginPath();
-    ctx.moveTo(18, 65);
-    ctx.bezierCurveTo(45, 65, 55, 25, 95, 25);
-    ctx.bezierCurveTo(125, 25, 130, 45, 142, 65);
-    ctx.strokeStyle = '#55657e';
-    ctx.lineWidth = 5;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-
-    const totalLen = playerBike.spline.totalLength;
-
-    // Helper to map 0..1 track progress to bezier
-    const getPosOnTrack = (ratio) => {
-      const x = 18 + ratio * 124;
-      const y = 45 - Math.sin(ratio * Math.PI * 2) * 20;
-      return { x, y };
-    };
-
-    // Draw Rival dots
+    // Draw Rival dots in their own colors
     for (const r of rivalsList) {
-      const rRatio = (r.s % totalLen) / totalLen;
-      const pt = getPosOnTrack(rRatio);
-      ctx.fillStyle = '#06b6d4';
+      const rFrame = playerBike.spline.getFrameAtDistance(r.s);
+      const pt = proj(rFrame.position.x, rFrame.position.z);
+      ctx.fillStyle = r.paintColor || '#06b6d4';
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, 3.2, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Draw Player dot (Bright orange with white ring)
-    const pRatio = (playerBike.s % totalLen) / totalLen;
-    const playerPt = getPosOnTrack(pRatio);
+    // Draw Player dot on top (bright orange with white ring)
+    const pFrame = playerBike.spline.getFrameAtDistance(playerBike.s);
+    const playerPt = proj(pFrame.position.x, pFrame.position.z);
 
     ctx.fillStyle = '#ff4d29';
     ctx.beginPath();
-    ctx.arc(playerPt.x, playerPt.y, 5, 0, Math.PI * 2);
+    ctx.arc(playerPt.x, playerPt.y, 4.8, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 1.6;
     ctx.stroke();
   }
 

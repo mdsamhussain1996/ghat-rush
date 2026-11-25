@@ -37,6 +37,7 @@ export class Game {
     this.raceTime = 0;
     this.totalTime = 0;
     this.slowMoTimer = 0;
+    this.finishTimer = 0;
     this.totalLaps = 3;
     this.nearMissCount = 0;
     this.bestLapTime = Infinity;
@@ -294,6 +295,7 @@ export class Game {
       this.restartRace();
     } else {
       this.cameraRig.reset(this.playerBike);
+      this.hud.setTrackSpline(this.spline);
       this.hud.setObjectives([]);
     }
   }
@@ -304,6 +306,7 @@ export class Game {
     this.replayBanner.classList.add('hidden');
     this.countdownEl.style.display = 'none';
     audio.stopEngine();
+    audio.setEnvironmentAmbience('coastal');
     this.hud.hide();
     this.menuSystem.show(screen);
   }
@@ -523,9 +526,10 @@ export class Game {
       this.postFX.update(simDt, this.playerBike);
       this.hud.update(simDt, this.playerBike, rivalsBikes, this.raceTime, this.totalLaps);
     } else if (this.state === 'FINISHED') {
+      this.finishTimer += dt;
       this.playerBike.speed = Math.max(0, this.playerBike.speed - 12.0 * dt);
       this.playerBike.update(dt, { throttle: 0, brake: 0.4, steer: 0, nitro: false, wheelie: false }, [], []);
-      this.cameraRig.update(dt, this.playerBike);
+      this.cameraRig.updateFinishSweep(dt, this.playerBike, this.finishTimer);
       this.sky.update(this.playerBike, dt);
       this.postFX.update(dt, this.playerBike);
     } else if (this.state === 'REPLAY') {
@@ -585,6 +589,7 @@ export class Game {
 
   finishRace() {
     this.state = 'FINISHED';
+    this.finishTimer = 0;
     this.slowMoTimer = 0;
     this.pauseMenu.hide();
     audio.setPaused(false);
@@ -708,6 +713,9 @@ export class Game {
     this.raceTime = 0;
     this.totalTime = 0;
     this.slowMoTimer = 0;
+    this.finishTimer = 0;
+    this.hud.setTrackSpline(this.spline);
+    audio.setEnvironmentAmbience(this.trackConfig?.environment || 'coastal');
     this.lastLap = 1;
     this.nearMissCount = 0;
     this.bestLapTime = Infinity;
