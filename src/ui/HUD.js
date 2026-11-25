@@ -10,15 +10,17 @@
  * - Mobile touch buttons
  */
 export class HUD {
-  constructor(container, input) {
+  constructor(container, input, callbacks = {}) {
     this.container = container || document.body;
     this.input = input;
+    this.callbacks = callbacks;
 
     this.root = document.createElement('div');
     this.root.id = 'hud-root';
     this.container.appendChild(this.root);
 
     this.popups = [];
+    this.slipstreamCooldown = 0;
     this.initDOM();
   }
 
@@ -26,11 +28,15 @@ export class HUD {
     this.root.innerHTML = `
       <div id="hud-top-left">
         <div id="hud-position"><span id="pos-val">1</span><span id="pos-total">/6</span></div>
-        <div id="hud-lap">LAP <span id="lap-val">1</span> / 3</div>
+        <div id="hud-lap">LAP <span id="lap-val">1</span> / <span id="lap-total">3</span></div>
         <div id="hud-timer">00:00.00</div>
       </div>
 
       <div id="hud-top-right">
+        <div id="hud-controls-bar">
+          <button id="hud-mute-btn" class="hud-icon-btn" title="Toggle Audio (M)">🔊</button>
+          <button id="hud-pause-btn" class="hud-icon-btn" title="Pause Game (Esc / P)">⏸</button>
+        </div>
         <canvas id="minimap-canvas" width="160" height="90"></canvas>
       </div>
 
@@ -80,7 +86,10 @@ export class HUD {
     this.posVal = document.getElementById('pos-val');
     this.posTotal = document.getElementById('pos-total');
     this.lapVal = document.getElementById('lap-val');
+    this.lapTotal = document.getElementById('lap-total');
     this.timerVal = document.getElementById('hud-timer');
+    this.muteBtn = document.getElementById('hud-mute-btn');
+    this.pauseBtn = document.getElementById('hud-pause-btn');
     this.nitroFill = document.getElementById('nitro-fill');
     this.speedoVal = document.getElementById('speedo-val');
     this.speedoGear = document.getElementById('speedo-gear');
@@ -89,7 +98,35 @@ export class HUD {
     this.minimapCanvas = document.getElementById('minimap-canvas');
     this.minimapCtx = this.minimapCanvas.getContext('2d');
 
+    if (this.muteBtn) {
+      this.muteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onToggleMute?.();
+        this.muteBtn.blur();
+      });
+    }
+    if (this.pauseBtn) {
+      this.pauseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onPause?.();
+        this.pauseBtn.blur();
+      });
+    }
+
     this.bindTouchControls();
+  }
+
+  syncMuteState(muted) {
+    if (!this.muteBtn) return;
+    this.muteBtn.textContent = muted ? '🔇' : '🔊';
+    this.muteBtn.classList.toggle('muted', !!muted);
+  }
+
+  clearPopups() {
+    this.slipstreamCooldown = 0;
+    if (this.popupContainer) {
+      this.popupContainer.innerHTML = '';
+    }
   }
 
   bindTouchControls() {
@@ -152,6 +189,7 @@ export class HUD {
     this.posVal.innerText = playerPos;
     this.posTotal.innerText = `/${allRacers.length}`;
     this.lapVal.innerText = Math.min(totalLaps, playerBike.lap);
+    if (this.lapTotal) this.lapTotal.innerText = totalLaps;
 
     // 2. Race Timer
     const mins = Math.floor(raceTime / 60);

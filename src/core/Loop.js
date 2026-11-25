@@ -1,6 +1,7 @@
 /**
  * Fixed 60 Hz Simulation Loop with Render Interpolation
  * Decouples physics step from display refresh rate to ensure deterministic simulation.
+ * Wraps each tick in try/catch so exceptions never kill requestAnimationFrame.
  */
 export class Loop {
   constructor(updateFn, renderFn) {
@@ -34,20 +35,28 @@ export class Loop {
   tick(currentTime) {
     if (!this.isRunning) return;
 
-    let frameTime = (currentTime - this.lastTime) / 1000;
-    if (frameTime > 0.25) frameTime = 0.25; // Clamp spiral of death
-    this.lastTime = currentTime;
+    try {
+      let frameTime = (currentTime - this.lastTime) / 1000;
+      if (frameTime > 0.25) frameTime = 0.25; // Clamp spiral of death
+      if (frameTime < 0) frameTime = 0;
+      this.lastTime = currentTime;
 
-    this.accumulator += frameTime;
+      this.accumulator += frameTime;
 
-    while (this.accumulator >= this.fixedStep) {
-      this.updateFn(this.fixedStep);
-      this.accumulator -= this.fixedStep;
+      while (this.accumulator >= this.fixedStep) {
+        this.updateFn(this.fixedStep);
+        this.accumulator -= this.fixedStep;
+      }
+
+      const alpha = this.accumulator / this.fixedStep;
+      this.renderFn(alpha, currentTime);
+    } catch (err) {
+      console.error('[Loop Tick Error]', err);
+      this.accumulator = 0;
+    } finally {
+      if (this.isRunning) {
+        this.rafId = requestAnimationFrame(this.tick);
+      }
     }
-
-    const alpha = this.accumulator / this.fixedStep;
-    this.renderFn(alpha, currentTime);
-
-    this.rafId = requestAnimationFrame(this.tick);
   }
 }

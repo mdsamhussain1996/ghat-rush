@@ -47,6 +47,7 @@ export class Traffic {
     for (let i = 0; i < this.poolSize; i++) {
       const type = types[i % types.length];
       const v = this.createVehicleMesh(type);
+      v.poolIndex = i;
       v.type = type;
       v.s = 0;
       v.d = 0;
@@ -288,11 +289,16 @@ export class Traffic {
     else speedKmh = 50 + Math.random() * 20;
 
     // Spawn 90m to 220m ahead of player (never within 25m behind camera)
+    const totalLen = this.spline.totalLength;
     const spawnDist = 90 + Math.random() * 130;
-    let s = (playerS + spawnDist) % this.spline.totalLength;
+    let s = (playerS + spawnDist) % totalLen;
 
-    // Check distance with already active vehicles to avoid overlaps
-    const tooClose = this.activeVehicles.some(v => Math.abs(v.s - s) < 18 && Math.abs(v.d - lane) < 1.5);
+    // Check wraparound distance with already active vehicles to avoid overlaps
+    const tooClose = this.activeVehicles.some(v => {
+      let sDiff = Math.abs(v.s - s);
+      if (sDiff > totalLen * 0.5) sDiff = totalLen - sDiff;
+      return sDiff < 18 && Math.abs(v.d - lane) < 1.5;
+    });
     if (tooClose) return;
 
     inactive.active = true;
@@ -371,6 +377,34 @@ export class Traffic {
 
   getActiveList() {
     return this.activeVehicles;
+  }
+
+  applyReplayFrame(trafficFrames = []) {
+    const seen = new Set();
+    for (const tf of trafficFrames) {
+      const v = this.vehicles[tf.idx];
+      if (!v) continue;
+      seen.add(tf.idx);
+      v.active = true;
+      v.s = tf.s;
+      v.d = tf.d;
+      v.group.visible = true;
+      const frame = this.spline.getFrameAtDistance(v.s);
+      const worldPos = frame.position.clone()
+        .addScaledVector(frame.binormal, v.d)
+        .addScaledVector(frame.normal, 0.05);
+      v.group.position.copy(worldPos);
+      v.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), frame.tangent);
+    }
+    this.activeVehicles = [];
+    for (const v of this.vehicles) {
+      if (!seen.has(v.poolIndex)) {
+        v.active = false;
+        v.group.visible = false;
+      } else {
+        this.activeVehicles.push(v);
+      }
+    }
   }
 
   reset() {

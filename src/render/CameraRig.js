@@ -22,6 +22,9 @@ export class CameraRig {
     this.currentLookAt = new THREE.Vector3();
     this.baseFov = 70;
     this.shakeIntensity = 0;
+    this.replayCutIndex = -1;
+    this.replayTrackCamPos = new THREE.Vector3();
+    this.replayForceChase = false;
 
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -129,9 +132,43 @@ export class CameraRig {
     }
   }
 
+  updateReplay(dt, playerBike, replayTime = 0, activeTraffic = []) {
+    if (!playerBike || !playerBike.group || !this.spline) return;
+
+    // Alternate every 3.5 seconds between trackside fly-by camera and chase cam
+    const segment = Math.floor(replayTime / 3.5);
+    const useTrackside = !this.replayForceChase && (segment % 2 === 0);
+
+    if (useTrackside) {
+      if (this.replayCutIndex !== segment) {
+        this.replayCutIndex = segment;
+        const aheadS = this.spline.wrapDistance(playerBike.s + 65);
+        const cutFrame = this.spline.getFrameAtDistance(aheadS);
+        const sideSign = (segment % 4 === 0) ? -1 : 1;
+        const halfW = (this.spline.trackData?.roadWidth || 14) / 2;
+        this.replayTrackCamPos.copy(cutFrame.position)
+          .addScaledVector(cutFrame.binormal, sideSign * (halfW + 3.2))
+          .addScaledVector(cutFrame.normal, 2.2);
+      }
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, 54, 6.0 * dt);
+      this.camera.updateProjectionMatrix();
+      this.camera.position.copy(this.replayTrackCamPos);
+      const targetLook = playerBike.group.position.clone().add(new THREE.Vector3(0, 0.9, 0));
+      this.currentLookAt.lerp(targetLook, Math.min(1.0, 14.0 * dt));
+      this.camera.lookAt(this.currentLookAt);
+    } else {
+      this.replayCutIndex = -1;
+      const savedMode = this.mode;
+      this.mode = 'close';
+      this.update(dt, playerBike, activeTraffic);
+      this.mode = savedMode;
+    }
+  }
+
   reset(playerBike) {
     if (!playerBike) return;
     this.currentPos.set(0, 0, 0);
     this.currentLookAt.set(0, 0, 0);
+    this.replayCutIndex = -1;
   }
 }

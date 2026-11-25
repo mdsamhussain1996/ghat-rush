@@ -266,6 +266,37 @@ export class Bike {
     // 5. Rider Model (Articulated team racing suit + aerodynamic helmet)
     this.rider = new Rider(this.paintColor, '#ffffff');
     this.bikeMesh.add(this.rider.group);
+
+    // Cache material references once so ghost mode never mutates child.material.transparent every frame
+    this.ghostMaterials = [];
+    const seenMats = new Set();
+    this.bikeMesh.traverse(child => {
+      if (child.isMesh && child.material && !seenMats.has(child.material)) {
+        seenMats.add(child.material);
+        this.ghostMaterials.push({
+          mat: child.material,
+          baseTransparent: !!child.material.transparent,
+          baseOpacity: child.material.opacity !== undefined ? child.material.opacity : 1.0
+        });
+      }
+    });
+  }
+
+  enterGhostMode(duration = 1.5) {
+    this.ghostTimer = duration;
+    if (!this.ghostMaterials) return;
+    for (const entry of this.ghostMaterials) {
+      entry.mat.transparent = true;
+    }
+  }
+
+  exitGhostMode() {
+    this.ghostTimer = 0;
+    if (!this.ghostMaterials) return;
+    for (const entry of this.ghostMaterials) {
+      entry.mat.transparent = entry.baseTransparent;
+      entry.mat.opacity = entry.baseOpacity;
+    }
   }
 
   update(dt, controls, rivalsList = [], trafficList = []) {
@@ -289,24 +320,17 @@ export class Bike {
       return;
     }
 
-    // Ghost invulnerability timer
+    // Ghost invulnerability timer (transparent toggled once on entry/exit; only opacity flashes per frame)
     if (this.ghostTimer > 0) {
       this.ghostTimer -= dt;
-      // Visual flashing indication
-      const flash = Math.sin(this.ghostTimer * 24) > 0;
-      this.bikeMesh.traverse(child => {
-        if (child.material) {
-          child.material.transparent = true;
-          child.material.opacity = flash ? 0.35 : 0.85;
-        }
-      });
       if (this.ghostTimer <= 0) {
-        this.bikeMesh.traverse(child => {
-          if (child.material) {
-            child.material.transparent = false;
-            child.material.opacity = 1.0;
-          }
-        });
+        this.exitGhostMode();
+      } else if (this.ghostMaterials) {
+        const flash = Math.sin(this.ghostTimer * 24) > 0;
+        const targetOp = flash ? 0.35 : 0.85;
+        for (const entry of this.ghostMaterials) {
+          entry.mat.opacity = Math.min(entry.baseOpacity, targetOp);
+        }
       }
     }
 
@@ -466,7 +490,7 @@ export class Bike {
     this.checkDrafting(rivalsList, trafficList, dt);
 
     // 7. Near Miss Detection
-    this.checkNearMisses(trafficList);
+    this.checkNearMisses(trafficList, dt);
 
     // 8. Collisions with Traffic Vehicles (Disabled during ghost invulnerability)
     if (this.ghostTimer <= 0) {
@@ -546,25 +570,32 @@ export class Bike {
     }
   }
 
-  checkNearMisses(trafficList) {
+  checkNearMisses(trafficList, dt = 1 / 60) {
     if (this.comboResetTimer > 0) {
-      this.comboResetTimer -= 0.016;
-      if (this.comboResetTimer <= 0) this.nearMissCombo = 0;
+      this.comboResetTimer -= dt;
+      if (this.comboResetTimer <= 0) {
+        this.comboResetTimer = 0;
+        this.nearMissCombo = 0;
+      }
     }
 
     const playerSpeedKmh = this.getSpeedKmh();
     if (playerSpeedKmh < 85) return;
 
+    const totalLen = this.spline.totalLength;
     for (const v of trafficList) {
       if (!v.active || v.hasNearMissed) continue;
-      const sDist = Math.abs(v.s - this.s);
+      let sDiff = v.s - this.s;
+      if (sDiff < -totalLen * 0.5) sDiff += totalLen;
+      if (sDiff > totalLen * 0.5) sDiff -= totalLen;
+      const sDist = Math.abs(sDiff);
       const vHalfW = (v.width || 1.8) / 2;
       const vHalfL = (v.length || 3.8) / 2;
 
       // Calculate edge-to-edge lateral gap
       const edgeGap = Math.abs(v.d - this.d) - (vHalfW + 0.35);
 
-      // Pass within 0.1m to 1.45m of vehicle edge while alongside
+      // Pass within 0.05m to 1.45m of vehicle edge while alongside
       if (edgeGap >= 0.05 && edgeGap <= 1.45 && sDist < (vHalfL + 2.2)) {
         v.hasNearMissed = true;
         this.nearMissCombo++;
@@ -582,8 +613,13 @@ export class Bike {
   }
 
   checkTrafficCollisions(trafficList) {
+    const totalLen = this.spline.totalLength;
     for (const v of trafficList) {
-      const sDist = Math.abs(v.s - this.s);
+      if (!v.active) continue;
+      let sDiff = v.s - this.s;
+      if (sDiff < -totalLen * 0.5) sDiff += totalLen;
+      if (sDiff > totalLen * 0.5) sDiff -= totalLen;
+      const sDist = Math.abs(sDiff);
       const dDist = Math.abs(v.d - this.d);
 
       // Bounding box overlap
@@ -624,7 +660,7 @@ export class Bike {
 
   respawnOnRoad() {
     this.isCrashed = false;
-    this.ghostTimer = 1.5; // 1.5s ghost invulnerability
+    this.enterGhostMode(1.5); // 1.5s ghost invulnerability
     this.speed = Math.max(16.0, (this.preCrashSpeed || 30.0) * 0.60); // 60% of pre-crash speed
 
     // Nearest safe lane center: -3.5, 0, or 3.5
@@ -651,18 +687,28 @@ export class Bike {
     this.lean = 0;
     this.wheelie = 0;
     this.stoppie = 0;
+    this.gear = 1;
+    this.rpmRatio = 0.1;
     this.steerSmoothed = 0;
     this.steerTapCount = 0;
+    this.lastSteerSign = 0;
     this.wobbleTimer = 0;
-    this.ghostTimer = 0;
+    this.wobbleMagnitude = 0;
+    this.exitGhostMode();
     this.isCrashed = false;
     this.crashTimer = 0;
+    this.isSliding = false;
     this.isNitro = false;
     this.isDrafting = false;
+    this.draftTimer = 0;
     this.draftPersistTimer = 0;
     this.nearMissCombo = 0;
+    this.comboResetTimer = 0;
+    this.lap = 1;
     this.bikeMesh.rotation.set(0, 0, 0);
     this.bikeMesh.position.set(0, 0, 0);
+    this.flameL.visible = false;
+    this.flameR.visible = false;
     this.nitro = this.nitroCapacity;
     this.syncTransform();
   }

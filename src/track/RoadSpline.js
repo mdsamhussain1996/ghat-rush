@@ -69,15 +69,27 @@ export class RoadSpline {
       });
     }
 
-    // Compute curvature from adjacent tangents
+    // Compute curvature from adjacent tangents (using real 3D world spacing)
     for (let i = 0; i < this.sampleCount; i++) {
       const curr = this.samples[i];
       const next = this.samples[(i + 1) % this.sampleCount];
       const cross = new THREE.Vector3().crossVectors(curr.tangent, next.tangent);
       const dot = curr.tangent.dot(next.tangent);
       const angle = Math.atan2(cross.y, dot);
-      curr.curvature = angle / (next.s - curr.s || 2);
+      const ds = curr.position.distanceTo(next.position) || 2.0;
+      curr.curvature = angle / ds;
     }
+
+    // 5-point circular moving-average smoothing pass on curvature
+    const rawCurv = this.samples.slice(0, this.sampleCount).map(s => s.curvature);
+    for (let i = 0; i < this.sampleCount; i++) {
+      let sum = 0;
+      for (let k = -2; k <= 2; k++) {
+        sum += rawCurv[(i + k + this.sampleCount) % this.sampleCount];
+      }
+      this.samples[i].curvature = sum / 5;
+    }
+    this.samples[this.sampleCount].curvature = this.samples[0].curvature;
   }
 
   wrapDistance(s) {

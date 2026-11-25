@@ -3,10 +3,13 @@
  * Real-time synthesis of multi-layer bike engine RPM, exhaust pops, wind, tire squeal,
  * Indian traffic horns, Doppler near-miss whooshes, nitro roar, and background rhythms.
  */
+import { save } from './Save.js';
+
 export class SoundEngine {
   constructor() {
     this.ctx = null;
-    this.muted = false;
+    this.muted = !!save.getSettings().audioMuted;
+    this.paused = false;
     this.masterGain = null;
     this.engineGain = null;
     this.sfxGain = null;
@@ -15,11 +18,11 @@ export class SoundEngine {
     // Engine synth nodes
     this.engineOsc1 = null;
     this.engineOsc2 = null;
-    this.engineNoise = null;
     this.engineFilter = null;
     this.engineRunning = false;
 
     // Wind synth nodes
+    this.windSource = null;
     this.windGain = null;
     this.windFilter = null;
 
@@ -39,7 +42,7 @@ export class SoundEngine {
     this.sfxGain = this.ctx.createGain();
     this.musicGain = this.ctx.createGain();
 
-    this.masterGain.gain.value = 0.85;
+    this.masterGain.gain.value = this.muted ? 0 : 0.85;
     this.engineGain.gain.value = 0.35;
     this.sfxGain.gain.value = 0.65;
     this.musicGain.gain.value = 0.28;
@@ -52,7 +55,7 @@ export class SoundEngine {
 
   resume() {
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume();
+      this.ctx.resume().catch(() => {});
     }
   }
 
@@ -66,10 +69,13 @@ export class SoundEngine {
   }
 
   setMuted(muted) {
-    this.muted = muted;
+    this.muted = !!muted;
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(muted ? 0 : 0.85, this.ctx.currentTime);
+      const t = this.ctx.currentTime;
+      this.masterGain.gain.cancelScheduledValues(t);
+      this.masterGain.gain.setValueAtTime(this.muted ? 0 : 0.85, t);
     }
+    save.updateSettings({ audioMuted: this.muted });
   }
 
   toggleMute() {
@@ -77,11 +83,36 @@ export class SoundEngine {
     return this.muted;
   }
 
+  setPaused(paused) {
+    this.paused = !!paused;
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    if (this.engineGain) {
+      this.engineGain.gain.cancelScheduledValues(t);
+      this.engineGain.gain.setValueAtTime(this.engineGain.gain.value, t);
+      this.engineGain.gain.linearRampToValueAtTime(this.paused ? 0 : (this.engineRunning ? 0.35 : 0), t + 0.08);
+    }
+    if (this.windGain) {
+      this.windGain.gain.cancelScheduledValues(t);
+      this.windGain.gain.setValueAtTime(this.windGain.gain.value, t);
+      this.windGain.gain.linearRampToValueAtTime(this.paused ? 0 : 0.001, t + 0.08);
+    }
+    if (this.musicGain) {
+      this.musicGain.gain.cancelScheduledValues(t);
+      this.musicGain.gain.setValueAtTime(this.musicGain.gain.value, t);
+      this.musicGain.gain.linearRampToValueAtTime(this.paused ? 0.06 : 0.28, t + 0.12);
+    }
+  }
+
   // --- Start Continuous Engine & Wind Synthesis ---
   startEngine() {
     if (!this.ctx || this.engineRunning) return;
     this.resume();
     const t = this.ctx.currentTime;
+
+    // Restore engine gain (in case stopEngine ramped it to 0 previously)
+    this.engineGain.gain.cancelScheduledValues(t);
+    this.engineGain.gain.setValueAtTime(this.paused ? 0 : 0.35, t);
 
     // Sub oscillator (piston thump)
     this.engineOsc1 = this.ctx.createOscillator();
@@ -103,8 +134,8 @@ export class SoundEngine {
     this.engineOsc2.connect(this.engineFilter);
     this.engineFilter.connect(this.engineGain);
 
-    this.engineOsc1.start();
-    this.engineOsc2.start();
+    this.engineOsc1.start(t);
+    this.engineOsc2.start(t);
 
     // Wind noise buffer
     const bufferSize = this.ctx.sampleRate * 2;
@@ -130,16 +161,53 @@ export class SoundEngine {
     this.windFilter.connect(this.windGain);
     this.windGain.connect(this.masterGain);
 
-    whiteNoise.start();
+    whiteNoise.start(t);
+    this.windSource = whiteNoise;
 
     this.engineRunning = true;
   }
 
-  updateEngine(rpmRatio, speedKmh, isNitro = false) {
+  stopEngine() {
     if (!this.ctx || !this.engineRunning) return;
+    this.engineRunning = false;
+
+    const t = this.ctx.currentTime;
+    const osc1 = this.engineOsc1;
+    const osc2 = this.engineOsc2;
+    const wind = this.windSource;
+
+    this.engineOsc1 = null;
+    this.engineOsc2 = null;
+    this.windSource = null;
+
+    if (this.engineGain) {
+      this.engineGain.gain.cancelScheduledValues(t);
+      this.engineGain.gain.setValueAtTime(this.engineGain.gain.value, t);
+      this.engineGain.gain.linearRampToValueAtTime(0, t + 0.3);
+    }
+    if (this.windGain) {
+      this.windGain.gain.cancelScheduledValues(t);
+      this.windGain.gain.setValueAtTime(this.windGain.gain.value, t);
+      this.windGain.gain.linearRampToValueAtTime(0, t + 0.3);
+    }
+
+    [osc1, osc2, wind].forEach(node => {
+      if (!node) return;
+      try {
+        node.stop(t + 0.31);
+        node.onended = () => {
+          try { node.disconnect(); } catch (e) {}
+        };
+      } catch (e) {}
+    });
+  }
+
+  updateEngine(rpmRatio, speedKmh, isNitro = false) {
+    if (!this.ctx || !this.engineRunning || this.paused) return;
+    if (!this.engineOsc1 || !this.engineOsc2 || !this.engineFilter) return;
     const t = this.ctx.currentTime;
 
-    // RPM frequency scaling: 40 Hz (idle) up to 340 Hz (redline)
+    // RPM frequency scaling: 42 Hz (idle) up to ~322 Hz (redline)
     const baseFreq = 42 + rpmRatio * 280;
     const harmonicFreq = baseFreq * 2.2;
     const filterFreq = 450 + rpmRatio * 2400 + (isNitro ? 1200 : 0);
@@ -149,18 +217,19 @@ export class SoundEngine {
     this.engineFilter.frequency.setTargetAtTime(filterFreq, t, 0.05);
 
     // Wind intensity scaling with speed
-    const windVol = Math.min(0.28, Math.max(0.001, Math.pow(speedKmh / 300, 2) * 0.3));
-    const windFreq = 300 + (speedKmh / 300) * 1200;
-    this.windGain.gain.setTargetAtTime(windVol, t, 0.08);
-    this.windFilter.frequency.setTargetAtTime(windFreq, t, 0.08);
+    if (this.windGain && this.windFilter) {
+      const windVol = Math.min(0.28, Math.max(0.001, Math.pow(speedKmh / 300, 2) * 0.3));
+      const windFreq = 300 + (speedKmh / 300) * 1200;
+      this.windGain.gain.setTargetAtTime(windVol, t, 0.08);
+      this.windFilter.frequency.setTargetAtTime(windFreq, t, 0.08);
+    }
   }
 
   // --- Discrete Sound Effects ---
   playGearShift() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
 
-    // Clutch disengage drop & exhaust pop
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sawtooth';
@@ -177,10 +246,9 @@ export class SoundEngine {
   }
 
   playNearMiss() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
 
-    // High velocity Doppler whoosh + metallic chord
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
@@ -197,10 +265,9 @@ export class SoundEngine {
   }
 
   playNitroIgnition() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
 
-    // Deep sub bass boom + surging flame hiss
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'triangle';
@@ -217,7 +284,7 @@ export class SoundEngine {
   }
 
   playTireSqueal() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
 
     const osc = this.ctx.createOscillator();
@@ -236,10 +303,9 @@ export class SoundEngine {
   }
 
   playTrafficHorn() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
 
-    // Classic dual-tone Indian vehicle horn (e.g. 420 Hz & 500 Hz)
     [420, 504].forEach(freq => {
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
@@ -258,10 +324,9 @@ export class SoundEngine {
   }
 
   playCrash() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.paused) return;
     const t = this.ctx.currentTime;
 
-    // Low boom + metal crunch
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sawtooth';
@@ -282,18 +347,16 @@ export class SoundEngine {
     if (this.bgmTimer || !this.ctx) return;
     this.resume();
 
-    // D-minor Indian fusion pentatonic bass & synth arp
     const scale = [146.83, 164.81, 174.61, 220.00, 246.94, 293.66, 329.63, 349.23];
     let step = 0;
-    const interval = 135; // ~133 BPM upbeat race tempo
+    const interval = 135;
 
     this.bgmTimer = setInterval(() => {
-      if (this.muted || !this.ctx) return;
+      if (this.muted || this.paused || !this.ctx) return;
       const t = this.ctx.currentTime;
       const note = scale[step % scale.length];
 
       try {
-        // Synth pluck
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = step % 4 === 0 ? 'sawtooth' : 'triangle';
@@ -307,7 +370,6 @@ export class SoundEngine {
         osc.start(t);
         osc.stop(t + 0.2);
 
-        // Tabla/Dholak bass kick on beats 0 & 2
         if (step % 2 === 0) {
           const kick = this.ctx.createOscillator();
           const kgain = this.ctx.createGain();

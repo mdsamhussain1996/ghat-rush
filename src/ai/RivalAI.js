@@ -175,12 +175,9 @@ export class RivalAI {
     const gridD = [-2.5, 2.5, -2.5, 2.5, -2.5];
     const gridS = [18, 12, 6, 0, -6];
     this.rivals.forEach((r, idx) => {
+      r.bike.reset();
       r.bike.s = Math.max(0, gridS[idx] || 0);
       r.bike.d = gridD[idx] || 0;
-      r.bike.speed = 0;
-      r.bike.lap = 1;
-      r.bike.isCrashed = false;
-      r.bike.nitro = r.bike.nitroCapacity;
       r.bike.syncTransform();
     });
   }

@@ -34,6 +34,7 @@ export class InputSystem {
     this.cameraJustPressed = false;
     this.resetJustPressed = false;
     this.pauseJustPressed = false;
+    this.muteJustPressed = false;
     this.f3JustPressed = false;
 
     // Mobile control mode: 'buttons' | 'tilt' | 'swipe'
@@ -51,6 +52,7 @@ export class InputSystem {
       if (e.code === 'KeyC') this.cameraJustPressed = true;
       if (e.code === 'KeyR') this.resetJustPressed = true;
       if (e.code === 'Escape' || e.code === 'KeyP') this.pauseJustPressed = true;
+      if (e.code === 'KeyM') this.muteJustPressed = true;
       if (e.code === 'F3') {
         e.preventDefault();
         this.f3JustPressed = true;
@@ -184,6 +186,7 @@ export class InputSystem {
       camera: this.consumeCamera(),
       reset: this.consumeReset(),
       pause: this.consumePause(),
+      mute: this.consumeMute(),
       f3: this.consumeF3()
     };
   }
@@ -192,6 +195,7 @@ export class InputSystem {
     if (action === 'camera') return this.consumeCamera();
     if (action === 'reset') return this.consumeReset();
     if (action === 'pause') return this.consumePause();
+    if (action === 'mute') return this.consumeMute();
     if (action === 'f3') return this.consumeF3();
     return false;
   }
@@ -211,6 +215,12 @@ export class InputSystem {
   consumePause() {
     const val = this.pauseJustPressed;
     this.pauseJustPressed = false;
+    return val;
+  }
+
+  consumeMute() {
+    const val = this.muteJustPressed;
+    this.muteJustPressed = false;
     return val;
   }
 

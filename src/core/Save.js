@@ -40,7 +40,14 @@ export class SaveManager {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        return { ...this.getDefaults(), ...JSON.parse(raw) };
+        const parsed = JSON.parse(raw);
+        const defaults = this.getDefaults();
+        return {
+          ...defaults,
+          ...parsed,
+          settings: { ...defaults.settings, ...(parsed.settings || {}) },
+          careerProgress: { ...defaults.careerProgress, ...(parsed.careerProgress || {}) }
+        };
       }
     } catch (e) {}
     return this.getDefaults();
