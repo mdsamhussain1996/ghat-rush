@@ -24,6 +24,8 @@ export class RoadSpline {
     this.sampleCount = Math.max(10, Math.floor(this.totalLength / 2));
     this.samples = [];
     this.initSamples();
+    this.laneCenters = this.getLaneCenters();
+    this.corners = this.analyzeCorners();
   }
 
   initSamples() {
@@ -125,6 +127,90 @@ export class RoadSpline {
       bank,
       curvature
     };
+  }
+
+  getLaneCenters() {
+    const lanes = Math.max(2, Math.round(this.trackData?.lanes || 3));
+    const roadWidth = this.trackData?.roadWidth || 14;
+    const laneW = (roadWidth - 2.4) / lanes;
+    const centers = [];
+    for (let i = 0; i < lanes; i++) {
+      centers.push(((i + 0.5) - lanes / 2) * laneW);
+    }
+    return centers;
+  }
+
+  analyzeCorners(maxSafeKmh = 220, driftK = 0.21, gripVel = 7.2) {
+    const corners = [];
+    let current = null;
+
+    for (let i = 0; i < this.sampleCount; i++) {
+      const sample = this.samples[i];
+      const absK = Math.abs(sample.curvature);
+      const safeMs = Math.sqrt(gripVel / (Math.max(0.0001, absK) * driftK));
+      const safeKmh = safeMs * 3.6;
+
+      if (safeKmh < maxSafeKmh) {
+        if (!current) {
+          current = {
+            startS: sample.s,
+            endS: sample.s,
+            apexS: sample.s,
+            maxAbsCurvature: absK,
+            apexCurvature: sample.curvature,
+            safeSpeedKmh: safeKmh
+          };
+        } else if (sample.s - current.endS <= 48) {
+          current.endS = sample.s;
+          if (absK > current.maxAbsCurvature) {
+            current.maxAbsCurvature = absK;
+            current.apexCurvature = sample.curvature;
+            current.apexS = sample.s;
+            current.safeSpeedKmh = safeKmh;
+          }
+        } else {
+          corners.push(current);
+          current = {
+            startS: sample.s,
+            endS: sample.s,
+            apexS: sample.s,
+            maxAbsCurvature: absK,
+            apexCurvature: sample.curvature,
+            safeSpeedKmh: safeKmh
+          };
+        }
+      }
+    }
+    if (current) corners.push(current);
+
+    // Merge wrap-around corner if close across start/finish line
+    if (corners.length >= 2) {
+      const first = corners[0];
+      const last = corners[corners.length - 1];
+      if ((this.totalLength - last.endS) + first.startS <= 48) {
+        if (first.maxAbsCurvature > last.maxAbsCurvature) {
+          last.maxAbsCurvature = first.maxAbsCurvature;
+          last.apexCurvature = first.apexCurvature;
+          last.apexS = first.apexS;
+          last.safeSpeedKmh = first.safeSpeedKmh;
+        }
+        last.endS = first.endS;
+        corners.shift();
+      }
+    }
+
+    return corners.map((c, idx) => ({
+      index: idx,
+      startS: c.startS,
+      apexS: c.apexS,
+      endS: c.endS,
+      maxAbsCurvature: c.maxAbsCurvature,
+      apexCurvature: c.apexCurvature,
+      safeSpeedKmh: Math.round(c.safeSpeedKmh),
+      // positive curvature bends toward -binormal (left from rider's perspective); sign preserved
+      direction: c.apexCurvature > 0 ? 'left' : 'right',
+      severity: c.safeSpeedKmh < 165 ? 3 : (c.safeSpeedKmh < 195 ? 2 : 1)
+    }));
   }
 
   roadToWorld(s, d, h = 0) {

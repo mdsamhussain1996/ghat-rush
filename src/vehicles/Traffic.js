@@ -20,7 +20,9 @@ export class Traffic {
     this.activeVehicles = [];
 
     this.roadWidth = trackData.roadWidth || 14.0;
-    this.lanes = [-3.8, -1.3, 1.3, 3.8]; // 4 distinct lanes
+    this.lanes = this.spline.getLaneCenters ? this.spline.getLaneCenters() : [-3.8, 0, 3.8];
+    this.density = Math.max(0.15, Math.min(1.0, trackData.trafficDensity || 0.45));
+    this.maxActive = Math.max(2, Math.min(this.poolSize, Math.round(this.lanes.length * this.density * 5.5)));
 
     // Reusable materials
     this.materials = {
@@ -36,7 +38,8 @@ export class Traffic {
       rubber: new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.9 }),
       glass: new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.1, metalness: 0.5 }),
       headlight: new THREE.MeshBasicMaterial({ color: 0xfffae0 }),
-      taillight: new THREE.MeshBasicMaterial({ color: 0xff1122 })
+      taillight: new THREE.MeshBasicMaterial({ color: 0xff1122 }),
+      indicator: new THREE.MeshBasicMaterial({ color: 0xffaa00 })
     };
 
     this.initPool();
@@ -52,6 +55,10 @@ export class Traffic {
       v.s = 0;
       v.d = 0;
       v.targetD = 0;
+      v.pendingTargetD = 0;
+      v.pendingLaneIdx = -1;
+      v.laneChangeState = 'none';
+      v.signalTimer = 0;
       v.speed = 0;
       v.hasNearMissed = false;
       v.active = false;
@@ -268,44 +275,133 @@ export class Traffic {
       group.add(tl);
     }
 
+    // Amber lane-change indicators (mounted rear + front left/right corners)
+    const indGeo = new THREE.BoxGeometry(0.14, 0.14, 0.18);
+    const makePair = (xSign) => {
+      const pair = new THREE.Group();
+      const rearInd = new THREE.Mesh(indGeo, this.materials.indicator);
+      rearInd.position.set(xSign * (width * 0.46), 0.72, length * 0.49);
+      const frontInd = new THREE.Mesh(indGeo, this.materials.indicator);
+      frontInd.position.set(xSign * (width * 0.46), 0.72, -length * 0.49);
+      pair.add(rearInd, frontInd);
+      pair.visible = false;
+      group.add(pair);
+      return pair;
+    };
+    const posXIndicator = makePair(1);
+    const negXIndicator = makePair(-1);
+
     return {
       group,
       length,
       width,
-      height
+      height,
+      posXIndicator,
+      negXIndicator
     };
   }
 
+  getNearestLaneIndex(d) {
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < this.lanes.length; i++) {
+      const dist = Math.abs(this.lanes[i] - d);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
+  wrapSigned(diff) {
+    const totalLen = this.spline.totalLength;
+    let r = diff;
+    if (r < -totalLen * 0.5) r += totalLen;
+    if (r > totalLen * 0.5) r -= totalLen;
+    return r;
+  }
+
+  wouldBlockAllLanes(candidateS, candidateLaneIdx, ignoreVehicle = null) {
+    // Collect active traffic within +-80m of candidateS and check every 80m window
+    const nearby = [{ sRel: 0, lanes: [candidateLaneIdx] }];
+    for (const v of this.activeVehicles) {
+      if (!v.active || v === ignoreVehicle) continue;
+      const sRel = this.wrapSigned(v.s - candidateS);
+      if (Math.abs(sRel) <= 80) {
+        const occ = [this.getNearestLaneIndex(v.d)];
+        if (v.laneChangeState === 'signaling' || v.laneChangeState === 'moving') {
+          const tIdx = v.laneChangeState === 'signaling'
+            ? this.getNearestLaneIndex(v.pendingTargetD)
+            : this.getNearestLaneIndex(v.targetD);
+          if (!occ.includes(tIdx)) occ.push(tIdx);
+        }
+        nearby.push({ sRel, lanes: occ });
+      }
+    }
+
+    const windowStarts = [-80, -40, 0];
+    for (const entry of nearby) {
+      if (entry.sRel >= -80 && entry.sRel <= 0) {
+        windowStarts.push(entry.sRel - 0.01);
+      }
+      if (entry.sRel >= 0 && entry.sRel <= 80) {
+        windowStarts.push(entry.sRel - 79.99);
+      }
+    }
+
+    for (const wStart of windowStarts) {
+      const wEnd = wStart + 80;
+      if (wStart > 0 || wEnd < 0) continue; // Only check 80m windows that contain candidateS (0)
+      const occupied = new Set();
+      for (const item of nearby) {
+        if (item.sRel >= wStart && item.sRel <= wEnd) {
+          for (const li of item.lanes) occupied.add(li);
+        }
+      }
+      if (occupied.size >= this.lanes.length) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   spawnAhead(playerS) {
+    if (this.activeVehicles.length >= this.maxActive) return;
     const inactive = this.vehicles.find(v => !v.active);
     if (!inactive) return;
 
-    // Pick lane and calculate speed based on vehicle type
-    const lane = this.lanes[Math.floor(Math.random() * this.lanes.length)];
+    const laneIdx = Math.floor(Math.random() * this.lanes.length);
+    const lane = this.lanes[laneIdx];
     let speedKmh = 60;
     if (inactive.type === 'rickshaw') speedKmh = 45 + Math.random() * 15;
     else if (inactive.type === 'truck') speedKmh = 52 + Math.random() * 18;
     else if (inactive.type === 'taxi') speedKmh = 75 + Math.random() * 25;
     else speedKmh = 50 + Math.random() * 20;
 
-    // Spawn 90m to 220m ahead of player (never within 25m behind camera)
+    // Spawn 90m to 220m ahead of player
     const totalLen = this.spline.totalLength;
     const spawnDist = 90 + Math.random() * 130;
-    let s = (playerS + spawnDist) % totalLen;
+    const s = (playerS + spawnDist) % totalLen;
 
-    // Check wraparound distance with already active vehicles to avoid overlaps
+    // Check same-lane longitudinal clearance AND guarantee at least 1 clear lane per 80m window
     const tooClose = this.activeVehicles.some(v => {
-      let sDiff = Math.abs(v.s - s);
-      if (sDiff > totalLen * 0.5) sDiff = totalLen - sDiff;
-      return sDiff < 18 && Math.abs(v.d - lane) < 1.5;
+      const sDiff = Math.abs(this.wrapSigned(v.s - s));
+      return sDiff < 24 && Math.abs(v.d - lane) < 1.8;
     });
-    if (tooClose) return;
+    if (tooClose || this.wouldBlockAllLanes(s, laneIdx, null)) return;
 
     inactive.active = true;
     inactive.s = s;
     inactive.d = lane;
     inactive.targetD = lane;
-    inactive.speed = speedKmh / 3.6; // m/s
+    inactive.pendingTargetD = lane;
+    inactive.pendingLaneIdx = -1;
+    inactive.laneChangeState = 'none';
+    inactive.signalTimer = 0;
+    inactive.posXIndicator.visible = false;
+    inactive.negXIndicator.visible = false;
+    inactive.speed = speedKmh / 3.6;
     inactive.hasNearMissed = false;
     inactive.group.visible = true;
 
@@ -322,6 +418,9 @@ export class Traffic {
       // Clear anything from 5m behind up to range ahead
       if (sRel >= -5 && sRel <= range) {
         v.active = false;
+        v.laneChangeState = 'none';
+        v.posXIndicator.visible = false;
+        v.negXIndicator.visible = false;
         v.group.visible = false;
         this.activeVehicles.splice(i, 1);
       }
@@ -329,8 +428,7 @@ export class Traffic {
   }
 
   update(dt, playerS, playerSpeed) {
-    // Keep active vehicle count around 10-14 vehicles
-    if (this.activeVehicles.length < 12 && Math.random() < 0.15) {
+    if (this.activeVehicles.length < this.maxActive && Math.random() < 0.22) {
       this.spawnAhead(playerS);
     }
 
@@ -339,25 +437,77 @@ export class Traffic {
     for (let i = this.activeVehicles.length - 1; i >= 0; i--) {
       const v = this.activeVehicles[i];
 
-      // Move along road
-      v.s = (v.s + v.speed * dt) % totalLen;
+      // Move along road while maintaining same-lane spacing and avoiding 80m multi-lane rolling blocks
+      let stepSpeed = v.speed;
+      const curLaneIdx = this.getNearestLaneIndex(v.d);
+      for (const other of this.activeVehicles) {
+        if (other === v || !other.active) continue;
+        const gap = this.wrapSigned(other.s - v.s);
+        if (gap > 0 && gap < 16 && Math.abs(other.d - v.d) < 1.8) {
+          stepSpeed = Math.min(stepSpeed, other.speed * 0.9);
+        }
+      }
+      const nextS = (v.s + stepSpeed * dt) % totalLen;
+      if (!this.wouldBlockAllLanes(nextS, curLaneIdx, v)) {
+        v.s = nextS;
+      }
 
-      // Gentle lane weaving or lane change logic
-      if (Math.abs(v.d - v.targetD) > 0.05) {
-        v.d = THREE.MathUtils.lerp(v.d, v.targetD, 1.2 * dt);
-      } else if (Math.random() < 0.003) {
-        // Occasionally switch lane
-        v.targetD = this.lanes[Math.floor(Math.random() * this.lanes.length)];
+      // Telegraph lane change with 1s blinking indicator before moving laterally
+      if (v.laneChangeState === 'none') {
+        v.posXIndicator.visible = false;
+        v.negXIndicator.visible = false;
+        if (this.lanes.length > 1 && Math.random() < 0.004) {
+          const curIdx = this.getNearestLaneIndex(v.d);
+          const dir = curIdx === 0 ? 1 : (curIdx === this.lanes.length - 1 ? -1 : (Math.random() < 0.5 ? -1 : 1));
+          const candIdx = curIdx + dir;
+          const candD = this.lanes[candIdx];
+          const laneConflict = this.activeVehicles.some(other =>
+            other !== v && other.active &&
+            Math.abs(this.wrapSigned(other.s - v.s)) < 26 &&
+            (Math.abs(other.d - candD) < 1.8 || Math.abs(other.targetD - candD) < 1.8)
+          );
+          if (!laneConflict && !this.wouldBlockAllLanes(v.s, candIdx, v)) {
+            v.laneChangeState = 'signaling';
+            v.signalTimer = 1.0;
+            v.pendingLaneIdx = candIdx;
+            v.pendingTargetD = candD;
+          }
+        }
+      } else if (v.laneChangeState === 'signaling') {
+        v.signalTimer -= dt;
+        if (v.signalTimer <= 0) {
+          const laneConflict = this.activeVehicles.some(other =>
+            other !== v && other.active &&
+            Math.abs(this.wrapSigned(other.s - v.s)) < 22 &&
+            (Math.abs(other.d - v.pendingTargetD) < 1.8 || Math.abs(other.targetD - v.pendingTargetD) < 1.8)
+          );
+          if (!laneConflict && !this.wouldBlockAllLanes(v.s, v.pendingLaneIdx, v)) {
+            v.targetD = v.pendingTargetD;
+            v.laneChangeState = 'moving';
+          } else {
+            v.laneChangeState = 'none';
+            v.posXIndicator.visible = false;
+            v.negXIndicator.visible = false;
+          }
+        }
+      } else if (v.laneChangeState === 'moving') {
+        if (Math.abs(v.d - v.targetD) > 0.05) {
+          v.d = THREE.MathUtils.lerp(v.d, v.targetD, 2.2 * dt);
+        } else {
+          v.d = v.targetD;
+          v.laneChangeState = 'none';
+          v.posXIndicator.visible = false;
+          v.negXIndicator.visible = false;
+        }
       }
 
       // Check distance relative to player for despawning
-      let sRel = v.s - playerS;
-      if (sRel < -totalLen * 0.5) sRel += totalLen;
-      if (sRel > totalLen * 0.5) sRel -= totalLen;
-
-      // Despawn if > 50m behind or > 320m ahead
+      const sRel = this.wrapSigned(v.s - playerS);
       if (sRel < -55 || sRel > 320) {
         v.active = false;
+        v.laneChangeState = 'none';
+        v.posXIndicator.visible = false;
+        v.negXIndicator.visible = false;
         v.group.visible = false;
         this.activeVehicles.splice(i, 1);
         continue;
@@ -369,9 +519,18 @@ export class Traffic {
         .addScaledVector(frame.binormal, v.d)
         .addScaledVector(frame.normal, 0.05);
       v.group.position.copy(worldPos);
-
-      // Orientation matching track tangent
       v.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), frame.tangent);
+
+      // Update blinker side visual after orientation matches tangent
+      if (v.laneChangeState === 'signaling' || v.laneChangeState === 'moving') {
+        v.blinkPhase = (v.blinkPhase || 0) + dt;
+        const blinkOn = Math.floor(v.blinkPhase * 6) % 2 === 0;
+        const localX = new THREE.Vector3(1, 0, 0).applyQuaternion(v.group.quaternion);
+        const destD = v.laneChangeState === 'signaling' ? v.pendingTargetD : v.targetD;
+        const movingPlusX = localX.dot(frame.binormal) * Math.sign(destD - v.d) >= 0;
+        v.posXIndicator.visible = blinkOn && movingPlusX;
+        v.negXIndicator.visible = blinkOn && !movingPlusX;
+      }
     }
   }
 
@@ -410,6 +569,10 @@ export class Traffic {
   reset() {
     for (const v of this.vehicles) {
       v.active = false;
+      v.laneChangeState = 'none';
+      v.signalTimer = 0;
+      v.posXIndicator.visible = false;
+      v.negXIndicator.visible = false;
       v.group.visible = false;
       v.hasNearMissed = false;
     }

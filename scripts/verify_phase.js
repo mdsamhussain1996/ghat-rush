@@ -300,12 +300,14 @@ async function runFullThreeLapRace(client, trackId, verifyReplay = false) {
 
       const bike = g.playerBike;
       const curFrame = g.spline.getFrameAtDistance(bike.s);
-      const aheadFrame1 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 35));
-      const aheadFrame2 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 75));
+      const aheadFrame1 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 25));
+      const aheadFrame2 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 55));
+      const aheadFrame3 = g.spline.getFrameAtDistance(g.spline.wrapDistance(bike.s + 95));
       const peakCurv = Math.max(
         Math.abs(curFrame.curvature || 0),
         Math.abs(aheadFrame1.curvature || 0),
-        Math.abs(aheadFrame2.curvature || 0)
+        Math.abs(aheadFrame2.curvature || 0),
+        Math.abs(aheadFrame3.curvature || 0)
       );
 
       const activeTraffic = g.traffic.getActiveList();
@@ -329,15 +331,15 @@ async function runFullThreeLapRace(client, trackId, verifyReplay = false) {
       }
 
       const hasDriftPhysics = typeof bike.gripDemandRatio === 'number';
-      const driftComp = hasDriftPhysics ? -(curFrame.curvature || 0) * bike.speed * bike.speed * 0.032 : 0;
+      const driftComp = hasDriftPhysics ? -(curFrame.curvature || 0) * bike.speed * bike.speed * 0.029 : 0;
       const dErr = bestLaneD - bike.d;
-      const steerCmd = Math.max(-1, Math.min(1, dErr * 0.65 + driftComp));
+      const steerCmd = Math.max(-1, Math.min(1, dErr * 0.55 + driftComp));
 
       let safeMs = 95;
       if (hasDriftPhysics && peakCurv > 0.004) {
-        safeMs = Math.min(safeMs, Math.sqrt(7.2 / (peakCurv * 0.195)));
+        safeMs = Math.min(safeMs, Math.sqrt(6.6 / (peakCurv * 0.21)));
       }
-      const brake = bike.speed > safeMs + 4 ? 0.9 : 0;
+      const brake = bike.speed > safeMs + 2 ? 0.95 : 0;
       const throttle = brake > 0 ? 0 : 1;
 
       g.input.keys.clear();
@@ -413,6 +415,294 @@ async function runFullThreeLapRace(client, trackId, verifyReplay = false) {
   client.assertCleanErrors(trackId);
 }
 
+async function runPhase2Checks(client) {
+  console.log('--- Phase 2 Functional Checks (Cornering, Warnings, Traffic, Crashes, R Reset) ---');
+
+  // 1. Verify lane counts match tracks.json on all 3 tracks
+  for (const tId of TRACKS) {
+    await client.navigate(`${BASE_URL}/?track=${tId}&autostart=1`);
+    const info = await client.eval(`(() => {
+      const g = window.gameInstance;
+      return {
+        expectedLanes: g.trackConfig.lanes,
+        splineLanes: g.spline.getLaneCenters().length,
+        trafficLanes: g.traffic.lanes.length,
+        corners: g.spline.corners?.length || 0,
+        chevrons: g.scenery.cornerChevrons?.length || 0
+      };
+    })()`);
+    assert(info.splineLanes === info.expectedLanes && info.trafficLanes === info.expectedLanes,
+      `${tId}: lanes mismatch (config=${info.expectedLanes}, spline=${info.splineLanes}, traffic=${info.trafficLanes})`);
+    assert(info.corners > 0 && info.chevrons > 0, `${tId}: expected corners & Scenery chevron signs`);
+    console.log(`✓ ${tId}: lanes=${info.trafficLanes}, sharpCorners=${info.corners}, chevronSigns=${info.chevrons}`);
+  }
+
+  // 2. Cornering physics, HUD warning, Traffic fairness/signals, Crashes, R reset on Konkan Cliffs
+  await client.navigate(`${BASE_URL}/?track=coast_route_1&autostart=1`);
+  client.clearErrors();
+  await client.clickCenter();
+
+  const physicsCheck = await client.eval(`(() => {
+    const g = window.gameInstance;
+    g.loop.stop();
+    while (g.state === 'COUNTDOWN') g.update(1 / 60);
+
+    const bike = g.playerBike;
+    const tightCorner = g.spline.corners[1]; // s ~ 2482, safe ~185 km/h
+
+    // Test 2a: Approaching tight bend without steering -> curvature drift pushes outside (+d)
+    bike.exitGhostMode();
+    bike.isCrashed = false;
+    bike.s = tightCorner.startS;
+    bike.d = 0;
+    bike.lean = 0;
+    bike.steerSmoothed = 0;
+    bike.speed = 215 / 3.6;
+    g.input.keys.clear();
+    g.input.keys.add('KeyW');
+    for (let i = 0; i < 45; i++) g.update(1 / 60);
+    const unsteeredDriftD = bike.d;
+    const unsteeredCrashed = bike.isCrashed;
+
+    // Test 2b: Same bend at 235 km/h even with full counter-lean exceeds grip & runs wide
+    bike.isCrashed = false;
+    bike.exitGhostMode();
+    bike.s = tightCorner.startS;
+    bike.d = 0;
+    bike.lean = 0;
+    bike.steerSmoothed = 0;
+    bike.speed = 240 / 3.6;
+    g.input.keys.clear();
+    g.input.keys.add('KeyW');
+    g.input.keys.add('KeyA');
+    let overspeedMaxD = 0;
+    let overspeedGripDemand = 0;
+    let overspeedCrashed = false;
+    for (let i = 0; i < 65; i++) {
+      g.update(1 / 60);
+      if (bike.d > overspeedMaxD) overspeedMaxD = bike.d;
+      if (bike.gripDemandRatio > overspeedGripDemand) overspeedGripDemand = bike.gripDemandRatio;
+      if (bike.isCrashed) overspeedCrashed = true;
+    }
+
+    // Test 2c: Same bend at 172 km/h WITH KeyW + counter-lean holds inside cleanly without crashing
+    bike.isCrashed = false;
+    bike.exitGhostMode();
+    bike.s = tightCorner.startS;
+    bike.d = 0;
+    bike.lean = 0;
+    bike.steerSmoothed = 0;
+    bike.speed = 172 / 3.6;
+    g.input.keys.clear();
+    g.input.keys.add('KeyW');
+    g.input.keys.add('KeyA');
+    for (let i = 0; i < 65; i++) g.update(1 / 60);
+    const controlled = { crashed: bike.isCrashed, d: bike.d };
+
+    // Test 2c-gentle: Full throttle (285 km/h) on gentle bend holds lane with counter-lean
+    let gentleS = 200;
+    for (let i = 0; i < g.spline.sampleCount; i++) {
+      const k = Math.abs(g.spline.samples[i].curvature);
+      if (k >= 0.002 && k <= 0.004) { gentleS = g.spline.samples[i].s; break; }
+    }
+    bike.isCrashed = false;
+    bike.exitGhostMode();
+    bike.s = gentleS;
+    bike.d = 0;
+    bike.lean = 0;
+    bike.steerSmoothed = 0;
+    bike.speed = 285 / 3.6;
+    const gFrame = g.spline.getFrameAtDistance(gentleS);
+    g.input.keys.clear();
+    g.input.keys.add('KeyW');
+    if (gFrame.curvature > 0) g.input.keys.add('KeyA');
+    else g.input.keys.add('KeyD');
+    for (let i = 0; i < 45; i++) g.update(1 / 60);
+    const gentleControlled = { crashed: bike.isCrashed, d: bike.d };
+
+    // Test 2d: HUD corner warning appears 100m before tight corner
+    bike.isCrashed = false;
+    bike.exitGhostMode();
+    bike.s = g.spline.wrapDistance(tightCorner.startS - 95);
+    bike.d = 0;
+    bike.speed = 35;
+    g.input.keys.clear();
+    g.update(1 / 60);
+    const cwEl = document.getElementById('hud-corner-warning');
+    const cornerWarn = {
+      visible: cwEl && !cwEl.classList.contains('hidden'),
+      chevrons: cwEl?.querySelector('.cw-chevrons')?.textContent || '',
+      dist: cwEl?.querySelector('.cw-dist')?.textContent || ''
+    };
+
+    // Test 2e: Traffic 80m clear-lane invariant + 1s telegraphed indicator test
+    g.traffic.reset();
+    let invariantViolated = false;
+    let observedSignalThenMove = false;
+    {
+      const savedMax = g.traffic.maxActive;
+      g.traffic.maxActive = 1;
+      const laneCenters = g.traffic.lanes;
+      const sv = g.traffic.vehicles[0];
+      sv.active = true;
+      sv.s = g.spline.wrapDistance(bike.s + 110);
+      sv.d = laneCenters[0];
+      sv.targetD = laneCenters[0];
+      sv.pendingLaneIdx = 1;
+      sv.pendingTargetD = laneCenters[1];
+      sv.laneChangeState = 'signaling';
+      sv.signalTimer = 1.0;
+      sv.speed = 15;
+      sv.group.visible = true;
+      g.traffic.activeVehicles.push(sv);
+
+      let movedEarly = false;
+      let blinked = false;
+      const startD = sv.d;
+      for (let tStep = 0; tStep < 80; tStep++) {
+        g.traffic.update(1 / 60, bike.s, 40);
+        const tSec = (tStep + 1) / 60;
+        if (sv.posXIndicator.visible || sv.negXIndicator.visible) blinked = true;
+        if (tSec < 0.92 && Math.abs(sv.d - startD) > 0.05) movedEarly = true;
+        if (tSec > 1.2 && Math.abs(sv.d - startD) > 0.15 && !movedEarly && blinked) {
+          observedSignalThenMove = true;
+        }
+      }
+      g.traffic.maxActive = savedMax;
+      g.traffic.reset();
+    }
+
+    for (let step = 0; step < 500; step++) {
+      g.traffic.update(1 / 60, bike.s, 40);
+      const active = g.traffic.getActiveList();
+      if (step % 15 === 0) {
+        const lanesCount = g.traffic.lanes.length;
+        for (const anchor of active) {
+          const occ = new Set();
+          for (const other of active) {
+            const ds = g.traffic.wrapSigned(other.s - anchor.s);
+            if (ds >= 0 && ds <= 80) {
+              occ.add(g.traffic.getNearestLaneIndex(other.d));
+            }
+          }
+          if (occ.size >= lanesCount) {
+            invariantViolated = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Test 2f: Traffic crash vs Rail crash + 0.3s @ 0.4x slow-mo + R reset (+1s penalty, no crash animation)
+    g.traffic.reset();
+    bike.isCrashed = false;
+    bike.exitGhostMode();
+    bike.s = 200;
+    bike.d = 0;
+    bike.speed = 52;
+    bike.lean = 0;
+    const tv = g.traffic.vehicles[0];
+    tv.active = true;
+    tv.s = 202.5;
+    tv.d = 0;
+    tv.targetD = 0;
+    tv.speed = 12;
+    tv.group.visible = true;
+    g.traffic.activeVehicles.push(tv);
+    g.slowMoTimer = 0;
+    for (let i = 0; i < 16; i++) g.update(1 / 60);
+    const afterTrafficCrash = {
+      isCrashed: bike.isCrashed,
+      crashType: bike.crashType,
+      d: bike.d,
+      slowMo: g.slowMoTimer,
+      shake: g.cameraRig.crashShakeTimer,
+      riderRotZ: bike.rider.group.rotation.z,
+      leftArmRotZ: bike.rider.leftArm.rotation.z
+    };
+
+    // Wait out crash respawn
+    for (let i = 0; i < 150 && bike.isCrashed; i++) g.update(1 / 60);
+    const lanes = g.spline.getLaneCenters();
+    const respawnedOnLane = lanes.some(ld => Math.abs(bike.d - ld) < 0.05);
+    const riderResetOk = Math.abs(bike.rider.group.rotation.x) < 0.01;
+
+    // Test Rail crash puts bike at rail
+    bike.exitGhostMode();
+    bike.isCrashed = false;
+    bike.d = 6.9;
+    bike.speed = 55;
+    bike.triggerCrash('rail');
+    const halfW = (g.trackConfig.roadWidth || 14) / 2;
+    const railD = bike.d;
+    const railType = bike.crashType;
+    for (let i = 0; i < 150 && bike.isCrashed; i++) g.update(1 / 60);
+
+    // Test R Reset (+1s penalty, no crash animation)
+    bike.isCrashed = false;
+    bike.exitGhostMode();
+    bike.speed = 50;
+    bike.d = 1.2;
+    const tBeforeR = g.raceTime;
+    g.input.resetJustPressed = true;
+    g.update(1 / 60);
+    const afterR = {
+      isCrashed: bike.isCrashed,
+      dtPenalty: g.raceTime - tBeforeR,
+      speed: bike.speed,
+      ghostTimer: bike.ghostTimer,
+      onLane: lanes.some(ld => Math.abs(bike.d - ld) < 0.05)
+    };
+
+    g.loop.start();
+    return {
+      unsteeredDriftD,
+      unsteeredCrashed,
+      overspeedMaxD,
+      overspeedGripDemand,
+      overspeedCrashed,
+      controlled,
+      gentleControlled,
+      cornerWarn,
+      invariantViolated,
+      observedSignalThenMove,
+      afterTrafficCrash,
+      respawnedOnLane,
+      riderResetOk,
+      railD,
+      halfW,
+      railType,
+      afterR
+    };
+  })()`);
+
+  assert(physicsCheck.unsteeredDriftD > 4.0 || physicsCheck.unsteeredCrashed,
+    `Expected unsteered bike at 215 km/h to drift wide on tight corner, got d=${physicsCheck.unsteeredDriftD}`);
+  assert(physicsCheck.overspeedCrashed || physicsCheck.overspeedMaxD > 5.0 || physicsCheck.overspeedGripDemand > 1.0,
+    `Expected 240 km/h on tight corner to exceed grip / run wide, got ${JSON.stringify(physicsCheck)}`);
+  assert(!physicsCheck.controlled.crashed && Math.abs(physicsCheck.controlled.d) < 5.5,
+    `Expected controlled 172 km/h counter-lean to hold corner cleanly, got ${JSON.stringify(physicsCheck.controlled)}`);
+  assert(!physicsCheck.gentleControlled.crashed && Math.abs(physicsCheck.gentleControlled.d) < 6.0,
+    `Expected full throttle on gentle bend to hold cleanly, got ${JSON.stringify(physicsCheck.gentleControlled)}`);
+  assert(physicsCheck.cornerWarn.visible && physicsCheck.cornerWarn.chevrons.length >= 1,
+    `Expected HUD corner warning within 150m, got ${JSON.stringify(physicsCheck.cornerWarn)}`);
+  assert(!physicsCheck.invariantViolated, '80m clear-lane traffic invariant violated!');
+  assert(physicsCheck.observedSignalThenMove, 'Traffic lane change must telegraph 1s with blinker before moving');
+  assert(physicsCheck.afterTrafficCrash.isCrashed && physicsCheck.afterTrafficCrash.crashType === 'traffic'
+    && Math.abs(physicsCheck.afterTrafficCrash.d) < 3.0 && physicsCheck.afterTrafficCrash.slowMo > 0.01
+    && physicsCheck.afterTrafficCrash.shake > 0.1 && Math.abs(physicsCheck.afterTrafficCrash.riderRotZ) > 0.15
+    && physicsCheck.afterTrafficCrash.leftArmRotZ < -1.0,
+    `Traffic crash physics mismatch: ${JSON.stringify(physicsCheck.afterTrafficCrash)}`);
+  assert(physicsCheck.respawnedOnLane && physicsCheck.riderResetOk, 'Crash respawn must snap to valid lane and reset rider pose');
+  assert(physicsCheck.railType === 'rail' && Math.abs(Math.abs(physicsCheck.railD) - (physicsCheck.halfW - 0.45)) < 0.1,
+    `Rail crash must place bike at rail edge: ${JSON.stringify(physicsCheck)}`);
+  assert(!physicsCheck.afterR.isCrashed && physicsCheck.afterR.dtPenalty >= 1.0 && physicsCheck.afterR.onLane && physicsCheck.afterR.ghostTimer > 1.0,
+    `R reset mismatch: ${JSON.stringify(physicsCheck.afterR)}`);
+
+  client.assertCleanErrors('Phase 2 checks');
+  console.log('✓ Phase 2 cornering, chevron warnings, fair signaling traffic, crash split & R reset checks passed');
+}
+
 async function main() {
   const newTarget = await openNewTab(`${BASE_URL}/?track=coast_route_1&autostart=1`);
   const client = new CDPClient(newTarget.webSocketDebuggerUrl);
@@ -429,6 +719,8 @@ async function main() {
   try {
     if (PHASE === 1) {
       await runPhase1Checks(client);
+    } else if (PHASE === 2) {
+      await runPhase2Checks(client);
     }
 
     for (let i = 0; i < TRACKS.length; i++) {

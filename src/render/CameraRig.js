@@ -22,6 +22,8 @@ export class CameraRig {
     this.currentLookAt = new THREE.Vector3();
     this.baseFov = 70;
     this.shakeIntensity = 0;
+    this.crashShakeTimer = 0;
+    this.crashShakeAmount = 0;
     this.replayCutIndex = -1;
     this.replayTrackCamPos = new THREE.Vector3();
     this.replayForceChase = false;
@@ -36,6 +38,11 @@ export class CameraRig {
     this.modeIndex = (this.modeIndex + 1) % this.modes.length;
     this.mode = this.modes[this.modeIndex];
     return this.mode;
+  }
+
+  triggerCrashShake(amount = 0.45) {
+    this.crashShakeTimer = 0.45;
+    this.crashShakeAmount = amount;
   }
 
   update(dt, playerBike, activeTraffic = []) {
@@ -103,7 +110,13 @@ export class CameraRig {
       .addScaledVector(frame.normal, lookUpDist);
 
     // 3. Camera Shake
-    this.shakeIntensity = Math.max(0, (speedKmh - 190) / 130) * 0.045 + (playerBike.isSliding ? 0.06 : 0);
+    if (this.crashShakeTimer > 0) {
+      this.crashShakeTimer = Math.max(0, this.crashShakeTimer - dt);
+    }
+    const crashShake = this.crashShakeTimer > 0
+      ? (this.crashShakeTimer / 0.45) * this.crashShakeAmount
+      : 0;
+    this.shakeIntensity = Math.max(0, (speedKmh - 190) / 130) * 0.045 + (playerBike.isSliding ? 0.06 : 0) + crashShake;
     if (this.shakeIntensity > 0) {
       const shakeX = (Math.random() - 0.5) * this.shakeIntensity;
       const shakeY = (Math.random() - 0.5) * this.shakeIntensity;
@@ -169,6 +182,7 @@ export class CameraRig {
     if (!playerBike) return;
     this.currentPos.set(0, 0, 0);
     this.currentLookAt.set(0, 0, 0);
+    this.crashShakeTimer = 0;
     this.replayCutIndex = -1;
   }
 }

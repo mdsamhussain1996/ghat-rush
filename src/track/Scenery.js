@@ -28,6 +28,7 @@ export class Scenery {
     this.initRoadsideLife();
     this.initBoatsAndLighthouse();
     this.initPalmsAndFlora();
+    this.initCornerChevrons();
 
     scene.add(this.group);
   }
@@ -796,6 +797,85 @@ export class Scenery {
     instancedTrunks.instanceMatrix.needsUpdate = true;
     instancedFronds.instanceMatrix.needsUpdate = true;
     this.group.add(instancedTrunks, instancedFronds);
+  }
+
+  initCornerChevrons() {
+    const corners = this.spline.corners || [];
+    if (corners.length === 0) return;
+
+    const placements = [];
+    const halfW = this.roadWidth / 2;
+    for (const c of corners) {
+      const outsideSign = c.direction === 'left' ? 1 : -1;
+      const offsets = c.severity >= 2 ? [-42, -16, 10] : [-38, -12];
+      for (const off of offsets) {
+        const s = this.spline.wrapDistance(c.startS + off);
+        placements.push({ s, outsideSign, direction: c.direction, d: outsideSign * (halfW + 1.15) });
+      }
+    }
+
+    if (placements.length === 0) return;
+
+    // Procedural high-contrast yellow/black reflective chevron texture pointing left (<)
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#facc15';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, 118, 118);
+    ctx.lineWidth = 22;
+    ctx.lineCap = 'square';
+    ctx.beginPath();
+    ctx.moveTo(86, 22);
+    ctx.lineTo(36, 64);
+    ctx.lineTo(86, 106);
+    ctx.stroke();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.anisotropy = 4;
+
+    const postGeo = new THREE.CylinderGeometry(0.055, 0.055, 2.2, 6);
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6, metalness: 0.5 });
+    const panelGeo = new THREE.BoxGeometry(1.15, 1.05, 0.08);
+    const panelMat = new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: 0.35,
+      emissive: new THREE.Color(0x423000),
+      emissiveIntensity: 0.45
+    });
+
+    const posts = new THREE.InstancedMesh(postGeo, postMat, placements.length);
+    const panels = new THREE.InstancedMesh(panelGeo, panelMat, placements.length);
+    const dummy = new THREE.Object3D();
+
+    placements.forEach((p, idx) => {
+      const frame = this.spline.getFrameAtDistance(p.s);
+      const pos = frame.position.clone().addScaledVector(frame.binormal, p.d);
+
+      dummy.position.set(pos.x, pos.y + 1.1, pos.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      posts.setMatrixAt(idx, dummy.matrix);
+
+      // Face back toward approaching riders (-tangent)
+      dummy.position.set(pos.x, pos.y + 1.95, pos.z);
+      const lookTarget = dummy.position.clone().sub(frame.tangent);
+      dummy.lookAt(lookTarget);
+      if (p.direction === 'right') {
+        dummy.rotateZ(Math.PI);
+      }
+      dummy.updateMatrix();
+      panels.setMatrixAt(idx, dummy.matrix);
+    });
+
+    posts.instanceMatrix.needsUpdate = true;
+    panels.instanceMatrix.needsUpdate = true;
+    this.cornerChevrons = placements;
+    this.group.add(posts, panels);
   }
 
   update(dt, timeSec = 0) {

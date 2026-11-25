@@ -42,6 +42,11 @@ export class HUD {
 
       <div id="hud-center-popups"></div>
 
+      <div id="hud-corner-warning" class="corner-warning hidden">
+        <span class="cw-chevrons">‹‹</span>
+        <span class="cw-dist">120m</span>
+      </div>
+
       <div id="hud-bottom-left">
         <div class="nitro-label">NITRO</div>
         <div class="nitro-bar-container">
@@ -95,6 +100,9 @@ export class HUD {
     this.speedoGear = document.getElementById('speedo-gear');
     this.speedoArc = document.getElementById('speedo-arc');
     this.popupContainer = document.getElementById('hud-center-popups');
+    this.cornerWarningEl = document.getElementById('hud-corner-warning');
+    this.cornerChevronsEl = this.cornerWarningEl?.querySelector('.cw-chevrons');
+    this.cornerDistEl = this.cornerWarningEl?.querySelector('.cw-dist');
     this.minimapCanvas = document.getElementById('minimap-canvas');
     this.minimapCtx = this.minimapCanvas.getContext('2d');
 
@@ -224,8 +232,46 @@ export class HUD {
       this.slipstreamCooldown = 3.2;
     }
 
-    // 6. Draw Mini-Map
+    // 6. Upcoming Corner Chevron Warning (150m before sharp bends)
+    this.updateCornerWarning(playerBike);
+
+    // 7. Draw Mini-Map
     this.renderMiniMap(playerBike, rivalsList);
+  }
+
+  updateCornerWarning(playerBike) {
+    if (!this.cornerWarningEl || !playerBike?.spline?.corners) return;
+    const corners = playerBike.spline.corners;
+    const totalLen = playerBike.spline.totalLength;
+    let activeCorner = null;
+    let activeDist = 999;
+
+    for (const c of corners) {
+      let distToStart = c.startS - playerBike.s;
+      if (distToStart < -totalLen * 0.5) distToStart += totalLen;
+      if (distToStart > totalLen * 0.5) distToStart -= totalLen;
+
+      let distToApex = c.apexS - playerBike.s;
+      if (distToApex < -totalLen * 0.5) distToApex += totalLen;
+      if (distToApex > totalLen * 0.5) distToApex -= totalLen;
+
+      const approaching = distToStart >= 0 && distToStart <= 150;
+      const enteringApex = distToStart < 0 && distToApex >= 0;
+      if ((approaching || enteringApex) && Math.max(0, distToStart) < activeDist) {
+        activeCorner = c;
+        activeDist = Math.max(0, distToStart);
+      }
+    }
+
+    if (!activeCorner) {
+      this.cornerWarningEl.classList.add('hidden');
+      return;
+    }
+
+    const glyph = activeCorner.direction === 'right' ? '›' : '‹';
+    this.cornerChevronsEl.textContent = glyph.repeat(activeCorner.severity || 1);
+    this.cornerDistEl.textContent = activeDist > 2 ? `${Math.round(activeDist)}m` : 'APEX';
+    this.cornerWarningEl.className = `corner-warning severity-${activeCorner.severity || 1}`;
   }
 
   renderMiniMap(playerBike, rivalsList) {

@@ -22,8 +22,11 @@ export class Bike {
     // Attributes & Stats
     this.topSpeedKmh = bikeStats.topSpeedKmh || 290;
     this.accelRate = (this.topSpeedKmh / 3.6) / (bikeStats.accelMs || 2.8); // m/s^2
-    this.brakeRate = 22.0; // m/s^2
+    this.brakeRate = bikeStats.brakeRate || 22.0; // m/s^2
     this.handling = bikeStats.handling || 0.94;
+    this.tyreGripBonus = bikeStats.tyreGripBonus || 1.0;
+    this.surfaceGrip = 1.0;
+    this.gripDemandRatio = 0;
     this.maxLeanRad = 0.87; // ~50 degrees
     this.nitroCapacity = bikeStats.nitroCapacity || 5.0; // seconds
     this.nitro = this.nitroCapacity;
@@ -58,11 +61,16 @@ export class Bike {
     this.slideAngle = 0;
     this.isCrashed = false;
     this.crashTimer = 0;
+    this.crashDuration = 2.0;
+    this.crashType = 'rail';
+    this.crashSlideDir = 0;
+    this.onCrash = null;
     this.nearMissCombo = 0;
     this.comboResetTimer = 0;
     this.lap = 1;
     this.lapStartTime = 0;
     this.totalRaceTime = 0;
+    this.topSpeedReachedKmh = 0;
 
     // Visual effect states
     this.brakeGlow = 0;
@@ -307,14 +315,30 @@ export class Bike {
     // 0. Crash recovery state
     if (this.isCrashed) {
       this.crashTimer -= dt;
-      this.speed = Math.max(0, this.speed - 24 * dt);
+      const elapsed = Math.max(0, this.crashDuration - this.crashTimer);
+      this.speed = Math.max(0, this.speed - (this.crashType === 'traffic' ? 16 : 24) * dt);
 
-      // Clamp strictly inside guardrails during tumble/slide
+      // Slide forward along track during tumble
+      this.s += this.speed * 0.45 * dt;
+      if (this.s >= this.spline.totalLength) {
+        this.s -= this.spline.totalLength;
+        this.lap++;
+      }
+
       const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
-      this.d = Math.max(-halfWidth + 0.4, Math.min(halfWidth - 0.4, this.d));
+      if (this.crashType === 'traffic') {
+        this.d += this.crashSlideDir * dt;
+        this.d = THREE.MathUtils.clamp(this.d, -halfWidth + 0.55, halfWidth - 0.55);
+        this.bikeMesh.rotation.set(0.35 + elapsed * 1.4, elapsed * 1.8, 1.35);
+      } else {
+        this.d = Math.sign(this.d || 1) * (halfWidth - 0.45);
+        this.bikeMesh.rotation.set(0.4, 0.8, 1.4);
+      }
+      this.bikeMesh.position.y = 0.14;
+      this.rider.updateCrashPose(elapsed, this.crashType);
 
       if (this.crashTimer <= 0) {
-        this.respawnOnRoad();
+        this.respawnOnRoad(trafficList);
       }
       this.syncTransform();
       return;
@@ -410,6 +434,8 @@ export class Bike {
 
     // Lean rate limited (<= 90 deg/s = 1.57 rad/s)
     const maxLeanRate = (90 * Math.PI / 180); // 1.57 rad/s
+    const speedRatio = Math.min(1.0, this.speed / (300 / 3.6));
+    const currentMaxLean = this.maxLeanRad * (1.0 - speedRatio * 0.35); // ~50 deg down to ~32 deg
 
     if (Math.abs(controls.steer) < 0.05) {
       // Eases back to upright when input is released (0.3s)
@@ -418,9 +444,7 @@ export class Bike {
     } else {
       // Input smoothing ramp (0.15s)
       this.steerSmoothed = THREE.MathUtils.lerp(this.steerSmoothed, controls.steer, Math.min(1.0, dt / 0.15));
-      const speedRatio = Math.min(1.0, this.speed / (300 / 3.6));
-      const maxLean = this.maxLeanRad * (1.0 - speedRatio * 0.35); // ~50 deg down to ~32 deg
-      const targetLean = -this.steerSmoothed * maxLean * this.handling * (1 - this.wheelie * 0.65);
+      const targetLean = -this.steerSmoothed * currentMaxLean * (1 - this.wheelie * 0.65);
 
       const leanDiff = targetLean - this.lean;
       const maxLeanChange = maxLeanRate * dt;
@@ -431,41 +455,41 @@ export class Bike {
     const wobbleOffset = this.wobbleTimer > 0 ? Math.sin(this.wobbleTimer * 28) * this.wobbleMagnitude : 0;
     const effectiveLean = this.lean + wobbleOffset;
 
-    // Lateral speed = f(lean) with a hard cap that decreases with speed
-    // At 200 km/h (55.5 m/s), max lateral speed is ~4.8 m/s:
-    // 0.2s tap = ~0.8m, 0.6s tap = ~3.0m (1 lane), 1.0s tap = ~4.8m (2 lanes, no rail crash)
-    const maxLateralSpeed = Math.max(4.2, 6.4 - (this.speed / (200 / 3.6)) * 1.6);
-    const leanFrac = THREE.MathUtils.clamp(-effectiveLean / this.maxLeanRad, -1.0, 1.0);
-    let lateralSpeed = leanFrac * maxLateralSpeed;
+    // Cornering Curvature Physics (signed curvature pushes toward outside of bend)
+    const frame = this.spline.getFrameAtDistance(this.s);
+    const curvature = frame.curvature || 0;
+    const gripLimitVel = 6.9 * (0.78 + 0.28 * this.handling) * this.tyreGripBonus * this.surfaceGrip;
+    const leanFrac = THREE.MathUtils.clamp(-effectiveLean / Math.max(0.25, currentMaxLean), -1.0, 1.0);
+    let steerVel = leanFrac * gripLimitVel;
+    const driftVel = curvature * (this.speed * this.speed) * 0.21;
+    this.gripDemandRatio = Math.abs(driftVel) / Math.max(1.0, gripLimitVel);
+    this.isSliding = (this.gripDemandRatio > 0.90 && this.speed > 25);
 
-    // Road Edge Limits & Lane Assist
+    // Road Edge Limits & Straight-line Rail Assist
     const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
     const distToRail = halfWidth - Math.abs(this.d);
     const steeringTowardRail = (this.d > 0 && controls.steer > 0.08) || (this.d < 0 && controls.steer < -0.08);
 
-    if (distToRail < 1.2) {
+    if (distToRail < 1.2 && Math.abs(curvature) < 0.0025) {
       if (!steeringTowardRail) {
-        // Not steering toward rail -> gentle push back to the road
         this.d -= Math.sign(this.d) * (1.2 - distToRail) * 3.5 * dt;
-      } else {
-        // Steering toward rail -> strong resistance until 2nd input
-        if (this.steerTapCount < 2) {
-          lateralSpeed *= 0.18; // 82% resistance against rail
-        }
+      } else if (this.steerTapCount < 2) {
+        steerVel *= 0.18;
       }
     }
 
-    this.d += lateralSpeed * dt;
+    const netLateralVel = steerVel + driftVel;
+    this.d += netLateralVel * dt;
 
-    // Guardrail Scrape vs Crash Logic (Phase 0 Fix 4: Crash only above ~25 deg impact angle, else scrape)
+    // Guardrail Scrape vs Crash Logic
     if (Math.abs(this.d) >= halfWidth - 0.25) {
-      const impactAngleDeg = Math.atan2(Math.abs(lateralSpeed), Math.max(1, this.speed)) * (180 / Math.PI);
+      const impactAngleDeg = Math.atan2(Math.abs(netLateralVel), Math.max(1, this.speed)) * (180 / Math.PI);
+      const hardWideSlide = (Math.abs(netLateralVel) > 3.2 && this.speed > 38);
 
-      if (impactAngleDeg > 25.0) {
-        this.triggerCrash();
+      if (impactAngleDeg > 22.0 || hardWideSlide) {
+        this.triggerCrash('rail');
         return;
       } else {
-        // Rail scrape -> Wobble + speed loss + stay inside barrier!
         this.d = Math.sign(this.d) * (halfWidth - 0.32);
         this.speed = Math.max(0, this.speed * (1.0 - 0.20 * dt * 60));
         this.wobbleTimer = 0.45;
@@ -475,6 +499,8 @@ export class Bike {
 
     // Strict safety clamp inside barriers at all times
     this.d = THREE.MathUtils.clamp(this.d, -halfWidth + 0.35, halfWidth - 0.35);
+    const kmh = this.getSpeedKmh();
+    if (kmh > this.topSpeedReachedKmh) this.topSpeedReachedKmh = kmh;
 
     // 4. Advance distance along track
     this.s = (this.s + this.speed * dt);
@@ -625,7 +651,7 @@ export class Bike {
       // Bounding box overlap
       if (sDist < (v.length || 3.8) / 2 + 1.1 && dDist < (v.width || 1.8) / 2 + 0.45) {
         if (this.speed > 28) {
-          this.triggerCrash();
+          this.triggerCrash('traffic');
         } else {
           // Slow glance
           this.speed *= 0.5;
@@ -636,39 +662,67 @@ export class Bike {
     }
   }
 
-  triggerCrash() {
+  triggerCrash(type = 'rail') {
     if (this.isCrashed || this.ghostTimer > 0) return;
     this.isCrashed = true;
+    this.crashType = type === 'traffic' ? 'traffic' : 'rail';
     this.preCrashSpeed = this.speed;
-    this.crashTimer = 2.0; // 2s tumble & slide before respawn
+    this.crashDuration = this.crashType === 'traffic' ? 1.65 : 2.0;
+    this.crashTimer = this.crashDuration;
     this.nearMissCombo = 0;
     this.isDrafting = false;
     this.draftPersistTimer = 0;
+    this.gripDemandRatio = 0;
 
-    // Keep bike clamped strictly inside road barriers during crash
     const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
-    this.d = Math.sign(this.d) * (halfWidth - 0.45);
+    if (this.crashType === 'rail') {
+      // Rail impacts clamp bike along the guardrail
+      this.d = Math.sign(this.d || 1) * (halfWidth - 0.45);
+      this.crashSlideDir = 0;
+      this.bikeMesh.rotation.set(0.4, 0.8, 1.4);
+    } else {
+      // Traffic hit tumbles forward along current d without snapping to rail
+      this.d = THREE.MathUtils.clamp(this.d, -halfWidth + 0.65, halfWidth - 0.65);
+      this.crashSlideDir = (Math.random() - 0.5) * 1.0;
+      this.bikeMesh.rotation.set(0.35, 0.25, 1.25);
+    }
+    this.bikeMesh.position.y = 0.14;
+    this.rider.updateCrashPose(0, this.crashType);
 
     if (this.isPlayer) {
       audio.playCrash();
+      if (this.onCrash) this.onCrash(this.crashType);
     }
-
-    // Pitch & roll bike in crash slide along the rail
-    this.bikeMesh.rotation.set(0.4, 0.8, 1.4);
-    this.bikeMesh.position.y = 0.15;
   }
 
-  respawnOnRoad() {
+  respawnOnRoad(trafficList = []) {
     this.isCrashed = false;
     this.enterGhostMode(1.5); // 1.5s ghost invulnerability
     this.speed = Math.max(16.0, (this.preCrashSpeed || 30.0) * 0.60); // 60% of pre-crash speed
 
-    // Nearest safe lane center: -3.5, 0, or 3.5
-    const lanes = [-3.5, 0, 3.5];
-    this.d = lanes.reduce((prev, curr) => Math.abs(curr - this.d) < Math.abs(prev - this.d) ? curr : prev);
+    const lanes = this.spline.getLaneCenters ? this.spline.getLaneCenters() : [-3.5, 0, 3.5];
+    const totalLen = this.spline.totalLength;
+    const sortedLanes = [...lanes].sort((a, b) => Math.abs(a - this.d) - Math.abs(b - this.d));
+
+    let chosenLane = sortedLanes[0];
+    for (const candidate of sortedLanes) {
+      const blocked = trafficList.some(v => {
+        if (!v.active) return false;
+        let sDiff = v.s - this.s;
+        if (sDiff < -totalLen * 0.5) sDiff += totalLen;
+        if (sDiff > totalLen * 0.5) sDiff -= totalLen;
+        return sDiff >= -12 && sDiff <= 45 && Math.abs(v.d - candidate) < 1.8;
+      });
+      if (!blocked) {
+        chosenLane = candidate;
+        break;
+      }
+    }
+    this.d = chosenLane;
 
     this.bikeMesh.rotation.set(0, 0, 0);
     this.bikeMesh.position.set(0, 0, 0);
+    this.rider.resetPose();
     this.wheelie = 0;
     this.stoppie = 0;
     this.lean = 0;
@@ -697,6 +751,10 @@ export class Bike {
     this.exitGhostMode();
     this.isCrashed = false;
     this.crashTimer = 0;
+    this.crashType = 'rail';
+    this.gripDemandRatio = 0;
+    this.topSpeedReachedKmh = 0;
+    this.rider.resetPose();
     this.isSliding = false;
     this.isNitro = false;
     this.isDrafting = false;

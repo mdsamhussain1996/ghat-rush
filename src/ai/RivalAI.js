@@ -62,26 +62,28 @@ export class RivalAI {
 
   update(dt, playerBike, trafficList) {
     const totalLen = this.spline.totalLength;
+    const halfW = (this.trackData?.roadWidth || 14) / 2;
+    const lanes = this.spline.getLaneCenters ? this.spline.getLaneCenters() : [-3.5, 0, 3.5];
 
     for (const r of this.rivals) {
       const bike = r.bike;
       const ctrl = r.controls;
 
-      // 1. Look-ahead along spline to calculate cornering line
-      const lookDist = 45 + (bike.speed * 0.8);
-      const futureS = (bike.s + lookDist) % totalLen;
+      // 1. Multi-point curvature lookahead along spline
       const currentFrame = this.spline.getFrameAtDistance(bike.s);
-      const futureFrame = this.spline.getFrameAtDistance(futureS);
+      const look1 = this.spline.getFrameAtDistance(bike.s + 28 + bike.speed * 0.35);
+      const look2 = this.spline.getFrameAtDistance(bike.s + 60 + bike.speed * 0.55);
+      const currentCurv = currentFrame.curvature || 0;
+      const peakCurvObj = [currentFrame, look1, look2].reduce((best, f) =>
+        Math.abs(f.curvature || 0) > Math.abs(best.curvature || 0) ? f : best, currentFrame);
+      const peakCurv = peakCurvObj.curvature || 0;
+      const isCurving = Math.abs(peakCurv) > 0.004;
 
-      // Measure curve curvature by cross product of tangents
-      const curveCross = currentFrame.tangent.x * futureFrame.tangent.z - currentFrame.tangent.z * futureFrame.tangent.x;
-      const isCurving = Math.abs(curveCross) > 0.04;
-
-      // Desired lateral offset (racing line: enter wide, hit apex, exit wide)
+      // Desired lateral offset (apex inside: negative binormal when curv > 0)
       let targetD = r.lanePreference;
       if (isCurving) {
-        // Cut towards inner apex of the curve
-        targetD = -Math.sign(curveCross) * 2.8;
+        const apexSide = -Math.sign(peakCurv);
+        targetD = apexSide * Math.max(1.2, halfW - 2.6);
       }
 
       // 2. Traffic Avoidance & Overtaking
@@ -95,7 +97,7 @@ export class RivalAI {
         if (sDist < -totalLen * 0.5) sDist += totalLen;
         if (sDist > totalLen * 0.5) sDist -= totalLen;
 
-        if (sDist > 2 && sDist < 28 && Math.abs(obs.d - bike.d) < 2.0) {
+        if (sDist > 2 && sDist < 34 && Math.abs(obs.d - bike.d) < 2.0) {
           if (sDist < minObstacleDist) {
             minObstacleDist = sDist;
             obstacleAhead = obs;
@@ -104,24 +106,31 @@ export class RivalAI {
       }
 
       if (obstacleAhead) {
-        // Steer away into clear lane
-        const steerSide = obstacleAhead.d > 0 ? -1 : 1;
-        targetD = obstacleAhead.d + steerSide * 2.5;
-        // Cap to road boundaries
-        targetD = Math.max(-5.0, Math.min(5.0, targetD));
+        // Choose clearest lane away from obstacle
+        const clearLanes = lanes.filter(ld => Math.abs(ld - obstacleAhead.d) > 2.0);
+        if (clearLanes.length > 0) {
+          targetD = clearLanes.reduce((a, b) => Math.abs(a - bike.d) < Math.abs(b - bike.d) ? a : b);
+        } else {
+          const steerSide = obstacleAhead.d > 0 ? -1 : 1;
+          targetD = obstacleAhead.d + steerSide * 2.5;
+        }
       }
+      targetD = Math.max(-(halfW - 1.5), Math.min(halfW - 1.5, targetD));
 
-      // 3. Steering control
+      // 3. Steering control + curvature counter-lean feedforward
+      const gripVel = 6.9 * (0.78 + 0.28 * bike.handling) * (bike.tyreGripBonus || 1) * (bike.surfaceGrip || 1);
+      const driftVel = currentCurv * (bike.speed * bike.speed) * 0.21;
+      const counterSteer = -driftVel / Math.max(1.0, gripVel);
       const dError = targetD - bike.d;
-      ctrl.steer = Math.max(-1.0, Math.min(1.0, dError * 0.45));
+      ctrl.steer = Math.max(-1.0, Math.min(1.0, dError * 0.45 + counterSteer));
 
-      // 4. Speed control & Braking
+      // 4. Speed control & Braking based on real safe cornering speed
       const speedKmh = bike.getSpeedKmh();
       let curveSpeedLimit = bike.topSpeedKmh;
 
-      if (isCurving) {
-        // Tighter curves require lower speeds
-        curveSpeedLimit = 160 + (r.skill * 50) - (Math.abs(curveCross) * 120);
+      if (Math.abs(peakCurv) > 0.004) {
+        const safeCornerKmh = Math.sqrt((gripVel * 0.90) / (Math.abs(peakCurv) * 0.21)) * 3.6;
+        curveSpeedLimit = Math.min(bike.topSpeedKmh, safeCornerKmh * (0.86 + r.skill * 0.14));
       }
 
       // Subtle rubber-banding: ±5%
@@ -130,21 +139,21 @@ export class RivalAI {
       if (playerDist > totalLen * 0.5) playerDist -= totalLen;
 
       let rubberBand = 1.0;
-      if (playerDist < -50) rubberBand = 1.05; // Player is far ahead, speed up slightly
-      else if (playerDist > 70) rubberBand = 0.95; // Rival is far ahead, ease up slightly
+      if (playerDist < -50) rubberBand = 1.05;
+      else if (playerDist > 70) rubberBand = 0.95;
 
       const targetSpeed = curveSpeedLimit * rubberBand;
 
-      if (speedKmh > targetSpeed + 8) {
+      if (speedKmh > targetSpeed + 6) {
         ctrl.throttle = 0;
-        ctrl.brake = Math.min(1.0, (speedKmh - targetSpeed) / 25);
+        ctrl.brake = Math.min(1.0, (speedKmh - targetSpeed) / 22);
       } else {
         ctrl.throttle = 1.0;
         ctrl.brake = 0;
       }
 
       // 5. Nitro usage on straights
-      if (!isCurving && speedKmh > 180 && bike.nitro > 1.0 && Math.random() < 0.05) {
+      if (!isCurving && speedKmh > 165 && bike.nitro > 1.0 && Math.random() < 0.05) {
         ctrl.nitro = true;
       } else {
         ctrl.nitro = false;

@@ -163,6 +163,47 @@ export class Rider {
     this.kneeSliderR.position.set(0.09, -0.16, 0.24);
     this.kneeSliderR.rotation.z = Math.PI / 2;
     this.rightLeg.add(this.kneeSliderR);
+
+    this._baseHipsY = this.hips.position.y;
+    this._baseHipsZ = this.hips.position.z;
+  }
+
+  updateCrashPose(elapsed = 0, crashType = 'rail') {
+    const t = Math.max(0, elapsed);
+    const arc = Math.sin(Math.min(1, t / 0.85) * Math.PI);
+    const flail = Math.sin(t * 14);
+    const slideSpread = Math.min(1, t * 2.2);
+
+    this.group.position.set(
+      crashType === 'traffic' ? 0.15 * slideSpread : -0.25 * slideSpread,
+      (crashType === 'traffic' ? 0.55 : 0.25) * arc - 0.18 * slideSpread,
+      crashType === 'traffic' ? 0.65 * Math.min(1, t * 1.6) : 0.15 * slideSpread
+    );
+    this.group.rotation.set(
+      -0.85 * slideSpread + flail * 0.18,
+      flail * 0.25,
+      (crashType === 'traffic' ? 1.15 : -0.95) * slideSpread
+    );
+    this.hips.position.set(0, this._baseHipsY, this._baseHipsZ);
+    this.torso.rotation.x = -0.35 + flail * 0.25;
+    this.head.rotation.set(0.3 * flail, flail * 0.5, -0.35);
+    this.leftArm.rotation.set(-1.1 + flail * 0.55, 0.4, -1.25);
+    this.rightArm.rotation.set(-0.9 - flail * 0.55, -0.4, 1.35);
+    this.leftLeg.rotation.set(0.45 * flail, -0.55, -0.65);
+    this.rightLeg.rotation.set(-0.45 * flail, 0.55, 0.65);
+  }
+
+  resetPose() {
+    this.group.position.set(0, 0, 0);
+    this.group.rotation.set(0, 0, 0);
+    this.hips.position.set(0, this._baseHipsY, this._baseHipsZ);
+    this.hips.rotation.set(0, 0, 0);
+    this.torso.rotation.set(0.44, 0, 0);
+    this.head.rotation.set(0, 0, 0);
+    this.leftArm.rotation.set(0.68, 0.2, -0.42);
+    this.rightArm.rotation.set(0.68, -0.2, 0.42);
+    this.leftLeg.rotation.set(0, 0, 0);
+    this.rightLeg.rotation.set(0, 0, 0);
   }
 
   updateAnimation(leanAngleRad, speedKmh, isBraking = false, wheelieAngle = 0) {

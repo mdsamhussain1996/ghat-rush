@@ -665,3 +665,54 @@ html, body {
   letter-spacing: 1px;
   cursor: pointer;
 }
+
+/* Corner Warning HUD Chevrons */
+.corner-warning {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 2px solid #facc15;
+  color: #facc15;
+  font-weight: 900;
+  letter-spacing: 2px;
+  pointer-events: none;
+  z-index: 25;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+
+.corner-warning.hidden {
+  display: none;
+}
+
+.corner-warning .cw-chevrons {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.corner-warning .cw-dist {
+  font-size: 14px;
+  color: #f8fafc;
+}
+
+.corner-warning.severity-1 {
+  border-color: #facc15;
+  color: #facc15;
+}
+
+.corner-warning.severity-2 {
+  border-color: #f97316;
+  color: #f97316;
+}
+
+.corner-warning.severity-3 {
+  border-color: #ef4444;
+  color: #ef4444;
+  box-shadow: 0 0 22px rgba(239, 68, 68, 0.45);
+}

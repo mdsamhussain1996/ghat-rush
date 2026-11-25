@@ -41,6 +41,7 @@ export class Game {
     this.lastLap = 1;
     this.lastRaceResults = null;
     this.lastEndSnapshot = null;
+    this.slowMoTimer = 0;
 
     // Track Configuration (default Konkan Cliffs; supports ?track=<id> for multi-track testing)
     const params = new URLSearchParams(window.location.search);
@@ -101,6 +102,12 @@ export class Game {
 
     this.playerBike.onRespawn = (s, range) => {
       this.traffic.clearAhead(s, range);
+    };
+
+    this.playerBike.onCrash = (type) => {
+      this.slowMoTimer = 0.3;
+      this.cameraRig.triggerCrashShake(type === 'traffic' ? 0.55 : 0.42);
+      this.hud.showPopup(type === 'traffic' ? 'TRAFFIC IMPACT!' : 'RAIL CRASH!', 'SLOW-MO RECOVERY', 'crash');
     };
 
     // 3. AI Rivals
@@ -284,9 +291,9 @@ export class Game {
       }
     }
 
-    // Reset hotkey (R) during racing
+    // Reset hotkey (R) during racing — instant track reset (+1s penalty, no crash animation)
     if (controls.reset && this.state === 'RACING') {
-      this.playerBike.triggerCrash();
+      this.resetPlayerToTrack();
     }
 
     if (this.state === 'COUNTDOWN') {
@@ -316,7 +323,13 @@ export class Game {
     }
 
     if (this.state === 'RACING') {
-      this.raceTime += dt;
+      let simDt = dt;
+      if (this.slowMoTimer > 0) {
+        this.slowMoTimer = Math.max(0, this.slowMoTimer - dt);
+        simDt = dt * 0.4;
+      }
+
+      this.raceTime += simDt;
 
       // Check lap transitions
       if (this.playerBike.lap > this.lastLap) {
@@ -336,22 +349,22 @@ export class Game {
       }
 
       const playerSpeed = this.playerBike.speed;
-      this.traffic.update(dt, this.playerBike.s, playerSpeed);
+      this.traffic.update(simDt, this.playerBike.s, playerSpeed);
       const activeTraffic = this.traffic.getActiveList();
 
-      this.rivalAI.update(dt, this.playerBike, activeTraffic);
+      this.rivalAI.update(simDt, this.playerBike, activeTraffic);
 
       const rivalsBikes = this.rivalAI.rivals.map(r => r.bike);
-      this.playerBike.update(dt, controls, rivalsBikes, activeTraffic);
+      this.playerBike.update(simDt, controls, rivalsBikes, activeTraffic);
 
       // Record tick to Replay ring buffer
       this.replayRecorder.recordFrame(this.playerBike, rivalsBikes, activeTraffic);
 
       this.cameraRig.update(dt, this.playerBike, activeTraffic);
       this.sky.update(this.playerBike);
-      this.postFX.update(dt, this.playerBike);
+      this.postFX.update(simDt, this.playerBike);
 
-      this.hud.update(dt, this.playerBike, rivalsBikes, this.raceTime, this.totalLaps);
+      this.hud.update(simDt, this.playerBike, rivalsBikes, this.raceTime, this.totalLaps);
     } else if (this.state === 'FINISHED') {
       this.playerBike.speed = Math.max(0, this.playerBike.speed - 12.0 * dt);
       this.playerBike.update(dt, { throttle: 0, brake: 0.4, steer: 0, nitro: false, wheelie: false }, [], []);
@@ -444,6 +457,50 @@ export class Game {
     this.resultsScreen.show(this.lastRaceResults);
   }
 
+  resetPlayerToTrack() {
+    if (this.state !== 'RACING' || this.playerBike.isCrashed) return;
+
+    this.raceTime += 1.0;
+
+    const lanes = this.spline.getLaneCenters ? this.spline.getLaneCenters() : [-3.5, 0, 3.5];
+    const totalLen = this.spline.totalLength;
+    const activeTraffic = this.traffic.getActiveList();
+    const sortedLanes = [...lanes].sort((a, b) => Math.abs(a - this.playerBike.d) - Math.abs(b - this.playerBike.d));
+
+    let chosenLane = sortedLanes[0];
+    let foundClear = false;
+    for (const candidate of sortedLanes) {
+      const blocked = activeTraffic.some(v => {
+        if (!v.active) return false;
+        let sDiff = v.s - this.playerBike.s;
+        if (sDiff < -totalLen * 0.5) sDiff += totalLen;
+        if (sDiff > totalLen * 0.5) sDiff -= totalLen;
+        return sDiff >= -10 && sDiff <= 40 && Math.abs(v.d - candidate) < 1.8;
+      });
+      if (!blocked) {
+        chosenLane = candidate;
+        foundClear = true;
+        break;
+      }
+    }
+    if (!foundClear) {
+      this.traffic.clearAhead(this.playerBike.s, 40);
+    }
+
+    this.playerBike.d = chosenLane;
+    this.playerBike.speed = Math.min(this.playerBike.speed, 22.0);
+    this.playerBike.lean = 0;
+    this.playerBike.wheelie = 0;
+    this.playerBike.stoppie = 0;
+    this.playerBike.steerSmoothed = 0;
+    this.playerBike.wobbleTimer = 0;
+    this.playerBike.rider.resetPose();
+    this.playerBike.enterGhostMode(1.5);
+    this.playerBike.syncTransform();
+
+    this.hud.showPopup('RESET TO TRACK', '+1.0s PENALTY', 'system');
+  }
+
   restartRace() {
     this.resultsScreen.hide();
     this.pauseMenu.hide();
@@ -460,6 +517,7 @@ export class Game {
 
     this.raceTime = 0;
     this.totalTime = 0;
+    this.slowMoTimer = 0;
     this.lastLap = 1;
     this.nearMissCount = 0;
     this.bestLapTime = Infinity;
