@@ -44,9 +44,10 @@ export class PostFX {
     this.lastSkidPoint = null;
     this.maxSkidSegments = 56;
 
-    // Tire smoke / off-road shoulder dust puffs & rail spark particles
+    // Tire smoke / off-road shoulder dust puffs & rail spark particles & finish confetti
     this.particles = [];
     this.sparks = [];
+    this.confetti = [];
     this.particleSpawnAccumulator = 0;
     this._projVec1 = new THREE.Vector3();
     this._projVec2 = new THREE.Vector3();
@@ -62,7 +63,25 @@ export class PostFX {
     this.lastSkidPoint = null;
     this.particles.length = 0;
     this.sparks.length = 0;
+    this.confetti.length = 0;
     this.ctx?.clearRect(0, 0, this.width, this.height);
+  }
+
+  triggerFinishConfetti() {
+    const palette = ['#ff4d29', '#facc15', '#38bdf8', '#10b981', '#f472b6', '#ffffff'];
+    for (let i = 0; i < 85; i++) {
+      this.confetti.push({
+        x: this.width * (0.15 + Math.random() * 0.7),
+        y: -20 - Math.random() * 140,
+        vx: (Math.random() - 0.5) * 180,
+        vy: 140 + Math.random() * 220,
+        size: 6 + Math.random() * 6,
+        rot: Math.random() * Math.PI * 2,
+        vrot: (Math.random() - 0.5) * 9,
+        color: palette[i % palette.length],
+        life: 3.5 + Math.random() * 1.5
+      });
+    }
   }
 
   emitSparks(sideSign = 1, intensity = 0.7) {
@@ -209,6 +228,25 @@ export class PostFX {
       this.ctx.moveTo(prevX, prevY);
       this.ctx.lineTo(sp.x, sp.y);
       this.ctx.stroke();
+    }
+
+    // 3b. Render Finish Line Celebratory Confetti
+    for (let i = this.confetti.length - 1; i >= 0; i--) {
+      const c = this.confetti[i];
+      c.life -= dt;
+      if (c.life <= 0 || c.y > this.height + 40) {
+        this.confetti.splice(i, 1);
+        continue;
+      }
+      c.x += c.vx * dt;
+      c.y += c.vy * dt;
+      c.rot += c.vrot * dt;
+      this.ctx.save();
+      this.ctx.translate(c.x, c.y);
+      this.ctx.rotate(c.rot);
+      this.ctx.fillStyle = c.color;
+      this.ctx.fillRect(-c.size * 0.5, -c.size * 0.3, c.size, c.size * 0.6);
+      this.ctx.restore();
     }
 
     // 4. Radial Speed Lines (> 140 km/h or Nitro)

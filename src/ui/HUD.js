@@ -58,6 +58,14 @@ export class HUD {
       <div id="hud-center-popups"></div>
       <div id="hud-race-banner" class="race-banner hidden">FINAL LAP!</div>
 
+      <div id="hud-progress-wrap">
+        <div class="hud-progress-track">
+          <div id="hud-progress-fill" style="width: 0%;"></div>
+          <div id="hud-progress-bike" style="left: 0%;">🏍</div>
+        </div>
+        <span class="hud-progress-flag">🏁</span>
+      </div>
+
       <div id="hud-corner-warning" class="corner-warning hidden">
         <span class="cw-chevrons">‹‹</span>
         <span class="cw-dist">120m</span>
@@ -86,6 +94,7 @@ export class HUD {
           <div id="speedo-val">0</div>
           <div id="speedo-unit">KM / H</div>
           <div id="speedo-gear">1</div>
+          <div class="rpm-bar-track"><div id="hud-rpm-fill" style="width: 15%;"></div></div>
         </div>
       </div>
 
@@ -130,6 +139,9 @@ export class HUD {
     this.speedoVal = document.getElementById('speedo-val');
     this.speedoGear = document.getElementById('speedo-gear');
     this.speedoArc = document.getElementById('speedo-arc');
+    this.rpmFill = document.getElementById('hud-rpm-fill');
+    this.progressFill = document.getElementById('hud-progress-fill');
+    this.progressBike = document.getElementById('hud-progress-bike');
     this.popupContainer = document.getElementById('hud-center-popups');
     this.cornerWarningEl = document.getElementById('hud-corner-warning');
     this.cornerChevronsEl = this.cornerWarningEl?.querySelector('.cw-chevrons');
@@ -353,10 +365,25 @@ export class HUD {
     const ms = Math.floor((raceTime * 100) % 100);
     this.timerVal.innerText = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
 
-    // 3. Speedometer
+    // 3. Speedometer & RPM Bar
     const speedKmh = playerBike.getSpeedKmh();
     this.speedoVal.innerText = speedKmh;
     this.speedoGear.innerText = playerBike.gear;
+
+    if (this.rpmFill) {
+      const rpmPct = Math.round(Math.max(0.12, Math.min(1.0, playerBike.rpmRatio || 0.15)) * 100);
+      this.rpmFill.style.width = `${rpmPct}%`;
+      this.rpmFill.style.background = rpmPct > 86 ? '#ef4444' : (rpmPct > 65 ? '#f59e0b' : '#38bdf8');
+    }
+
+    // Distance-to-Summit / Finish Progress Bar
+    if (this.progressFill && this.progressBike && totalLen > 0) {
+      const totalRaceDist = totalLen * Math.max(1, totalLaps);
+      const frac = Math.max(0, Math.min(1, progressOf(playerBike) / totalRaceDist));
+      const pct = (frac * 100).toFixed(1);
+      this.progressFill.style.width = `${pct}%`;
+      this.progressBike.style.left = `${pct}%`;
+    }
 
     // Speedometer Arc: dashoffset from 320 (0 km/h) down to 80 (320 km/h)
     const speedRatio = Math.min(1.0, speedKmh / 320);

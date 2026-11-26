@@ -592,6 +592,43 @@ export class SoundEngine {
     });
   }
 
+  playCountdownBeep(isGo = false) {
+    if (!this.ctx || this.muted) return;
+    this.resume();
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = isGo ? 'sawtooth' : 'sine';
+    osc.frequency.setValueAtTime(isGo ? 880 : 440, t);
+    gain.gain.setValueAtTime(isGo ? 0.28 : 0.20, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + (isGo ? 0.42 : 0.18));
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + (isGo ? 0.44 : 0.20));
+  }
+
+  playFinishFanfare() {
+    if (!this.ctx || this.muted) return;
+    this.resume();
+    const t = this.ctx.currentTime;
+    const notes = [587.33, 739.99, 880.0, 1174.66]; // D5 F#5 A5 D6
+    notes.forEach((freq, idx) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = idx === notes.length - 1 ? 'sawtooth' : 'triangle';
+      const startT = t + idx * 0.11;
+      const dur = idx === notes.length - 1 ? 0.65 : 0.22;
+      osc.frequency.setValueAtTime(freq, startT);
+      gain.gain.setValueAtTime(0.24, startT);
+      gain.gain.exponentialRampToValueAtTime(0.001, startT + dur);
+      osc.connect(gain);
+      gain.connect(this.sfxGain);
+      osc.start(startT);
+      osc.stop(startT + dur + 0.02);
+    });
+  }
+
   playUIClick() {
     if (!this.ctx || this.muted) return;
     this.resume();
@@ -721,6 +758,10 @@ export class SoundEngine {
       440.00, 523.25, 659.25, 587.33,
       523.25, 466.16, 440.00, 329.63
     ];
+    const padChords = [
+      [146.83, 220.00, 261.63], // Dm7
+      [174.61, 220.00, 261.63]  // Fmaj
+    ];
 
     let step = 0;
     const stepMs = 130; // ~115 BPM 16th-note pulse
@@ -733,6 +774,24 @@ export class SoundEngine {
       const speedNorm = Math.min(1.0, (this.currentSpeedKmh || 0) / 260);
 
       try {
+        // 0. Atmospheric Synthwave Chord Pads (every 8 steps)
+        if (idx % 8 === 0) {
+          const chord = padChords[Math.floor(idx / 8) % padChords.length];
+          chord.forEach(freq => {
+            const pOsc = this.ctx.createOscillator();
+            const pGain = this.ctx.createGain();
+            pOsc.type = 'triangle';
+            pOsc.frequency.setValueAtTime(freq, t);
+            pGain.gain.setValueAtTime(0.001, t);
+            pGain.gain.linearRampToValueAtTime(0.024, t + 0.18);
+            pGain.gain.exponentialRampToValueAtTime(0.001, t + 0.98);
+            pOsc.connect(pGain);
+            pGain.connect(this.bgmFilter);
+            pOsc.start(t);
+            pOsc.stop(t + 1.0);
+          });
+        }
+
         // 1. Driving Synth Bassline
         const bassOsc = this.ctx.createOscillator();
         const bassGain = this.ctx.createGain();

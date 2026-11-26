@@ -34,6 +34,7 @@ export class Game {
     this.state = 'TITLE'; // 'TITLE', 'MENU', 'GARAGE', 'COUNTDOWN', 'RACING', 'PAUSED', 'FINISHED', 'REPLAY'
     this.prePauseState = 'RACING';
     this.countdownTimer = 3.8;
+    this.lastCountdownStage = '';
     this.raceTime = 0;
     this.totalTime = 0;
     this.slowMoTimer = 0;
@@ -527,20 +528,29 @@ export class Game {
 
     if (this.state === 'COUNTDOWN') {
       this.countdownTimer -= dt;
+      let stage = '';
       if (this.countdownTimer > 2.8) {
-        this.countdownEl.innerText = '3';
+        stage = '3';
+        this.countdownEl.innerHTML = '<div class="tl-lights"><span class="tl-dot active-red"></span><span class="tl-dot"></span><span class="tl-dot"></span></div>3';
       } else if (this.countdownTimer > 1.8) {
-        this.countdownEl.innerText = '2';
+        stage = '2';
+        this.countdownEl.innerHTML = '<div class="tl-lights"><span class="tl-dot active-red"></span><span class="tl-dot active-red"></span><span class="tl-dot"></span></div>2';
       } else if (this.countdownTimer > 0.8) {
-        this.countdownEl.innerText = '1';
+        stage = '1';
+        this.countdownEl.innerHTML = '<div class="tl-lights"><span class="tl-dot active-amber"></span><span class="tl-dot active-amber"></span><span class="tl-dot active-amber"></span></div>1';
       } else if (this.countdownTimer > 0) {
-        this.countdownEl.innerText = 'GO!';
+        stage = 'GO';
+        this.countdownEl.innerHTML = '<div class="tl-lights"><span class="tl-dot active-green"></span><span class="tl-dot active-green"></span><span class="tl-dot active-green"></span></div>GO!';
         this.countdownEl.classList.add('countdown-go');
       } else {
         this.countdownEl.style.display = 'none';
         this.state = 'RACING';
         this.currentLapStartTime = 0;
         if (audio.ctx) audio.startEngine();
+      }
+      if (stage && stage !== this.lastCountdownStage) {
+        this.lastCountdownStage = stage;
+        audio.playCountdownBeep(stage === 'GO');
       }
 
       const idleControls = { throttle: 0, brake: 0, steer: 0, nitro: false, wheelie: false };
@@ -687,6 +697,9 @@ export class Game {
     this.pauseMenu.hide();
     audio.setPaused(false);
     audio.stopEngine();
+    audio.playFinishFanfare();
+    this.postFX?.triggerFinishConfetti();
+    this.playerBike.enterGhostMode(5.0);
 
     const leaderboard = this.rivalAI.getLeaderboard(this.playerBike);
     const playerPos = leaderboard.findIndex(entry => entry.isPlayer) + 1;
@@ -728,6 +741,14 @@ export class Game {
       r: rivalsBikes.map(rb => ({ s: rb.s, d: rb.d, speed: rb.speed }))
     };
 
+    const totalRaceMeters = this.playerBike.totalDistanceMeters > 10
+      ? this.playerBike.totalDistanceMeters
+      : (this.spline?.totalLength || 2800) * Math.max(1, this.totalLaps);
+    const topKmh = this.playerBike.topSpeedReachedKmh || 0;
+    const rawAvg = this.raceTime > 0 ? Math.round((totalRaceMeters / this.raceTime) * 3.6) : 0;
+    const avgSpeedKmh = topKmh > 0 ? Math.min(topKmh, rawAvg) : rawAvg;
+    const recordRes = save.recordBestRaceTime(this.trackConfig?.id, this.raceTime);
+
     this.lastRaceResults = {
       position: playerPos,
       totalRacers: leaderboard.length,
@@ -735,6 +756,9 @@ export class Game {
       nearMisses: this.nearMissCount,
       bestLap: this.bestLapTime,
       topSpeedKmh: this.playerBike.topSpeedReachedKmh || 0,
+      avgSpeedKmh,
+      personalBestTime: recordRes.bestTime,
+      isNewRecord: recordRes.isNewRecord,
       scoreBreakdown,
       objectives,
       hasNextRace,
@@ -800,9 +824,10 @@ export class Game {
 
     this.state = 'COUNTDOWN';
     this.countdownTimer = 3.8;
+    this.lastCountdownStage = '';
     this.countdownEl.style.display = 'block';
     this.countdownEl.classList.remove('countdown-go');
-    this.countdownEl.innerText = '3';
+    this.countdownEl.innerHTML = '<div class="tl-lights"><span class="tl-dot active-red"></span><span class="tl-dot"></span><span class="tl-dot"></span></div>3';
 
     this.raceTime = 0;
     this.totalTime = 0;

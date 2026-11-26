@@ -224,11 +224,11 @@ html, body {
 
 .hud-gaps {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
   letter-spacing: 1px;
-  color: #38bdf8;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  color: #7dd3fc;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.98), 0 0 6px rgba(0, 0, 0, 0.85);
 }
 
 .race-banner {
@@ -379,6 +379,106 @@ html, body {
   font-weight: 900;
   color: #f59e0b;
   margin-top: 2px;
+}
+
+.rpm-bar-track {
+  width: 68px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+#hud-rpm-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #38bdf8;
+  transition: width 0.05s linear, background-color 0.12s ease;
+}
+
+#hud-progress-wrap {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(8px);
+}
+
+.hud-progress-track {
+  position: relative;
+  width: 210px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+#hud-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ff4d29, #facc15);
+}
+
+#hud-progress-bike {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -55%);
+  font-size: 16px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.8));
+}
+
+.hud-progress-flag {
+  font-size: 15px;
+}
+
+.tl-lights {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.tl-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(30, 41, 59, 0.9);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+}
+
+.tl-dot.active-red {
+  background: #ef4444;
+  box-shadow: 0 0 18px #ef4444;
+}
+
+.tl-dot.active-amber {
+  background: #f59e0b;
+  box-shadow: 0 0 18px #f59e0b;
+}
+
+.tl-dot.active-green {
+  background: #10b981;
+  box-shadow: 0 0 22px #10b981;
+}
+
+.new-record-badge {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.65);
 }
 
 /* Countdown Overlay */
@@ -921,7 +1021,10 @@ body.touch-device #hud-bottom-left {
 }
 
 .title-cta {
-  padding: 15px 42px;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 240px;
+  padding: 16px 44px;
   font-size: 18px;
 }
 

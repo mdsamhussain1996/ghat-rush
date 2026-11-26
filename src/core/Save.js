@@ -30,6 +30,7 @@ export class SaveManager {
         bossesDefeated: {}
       },
       bestLaps: {},
+      bestRaceTimes: {},
       settings: {
         audioMuted: false,
         musicVolume: 0.7,
@@ -216,6 +217,24 @@ export class SaveManager {
       this.data.bestLaps[trackId] = lapSec;
       this.save();
     }
+  }
+
+  getBestRaceTime(trackId) {
+    return this.data.bestRaceTimes?.[trackId] || null;
+  }
+
+  recordBestRaceTime(trackId, raceTimeSec) {
+    if (!trackId || !Number.isFinite(raceTimeSec) || raceTimeSec <= 0) {
+      return { isNewRecord: false, bestTime: null };
+    }
+    if (!this.data.bestRaceTimes) this.data.bestRaceTimes = {};
+    const prev = this.data.bestRaceTimes[trackId];
+    const isNewRecord = !prev || raceTimeSec < prev;
+    if (isNewRecord) {
+      this.data.bestRaceTimes[trackId] = raceTimeSec;
+      this.save();
+    }
+    return { isNewRecord, bestTime: this.data.bestRaceTimes[trackId] };
   }
 
   getSettings() {

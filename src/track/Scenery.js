@@ -47,8 +47,78 @@ export class Scenery {
       this.initPalmsAndFlora();
       this.initCornerChevrons();
     }
+    this.initFinishGantry();
 
     scene.add(this.group);
+  }
+
+  initFinishGantry() {
+    const startFrame = this.spline.getFrameAtDistance(0);
+    const gantryW = this.roadWidth + 2.4;
+    const gantryGrp = new THREE.Group();
+    gantryGrp.position.copy(startFrame.position);
+    gantryGrp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), startFrame.tangent);
+
+    // Checkered Overhead Banner Canvas Texture
+    const bannerCanvas = document.createElement('canvas');
+    bannerCanvas.width = 512;
+    bannerCanvas.height = 128;
+    const bctx = bannerCanvas.getContext('2d');
+    const sq = 16;
+    for (let y = 0; y < 128; y += sq) {
+      for (let x = 0; x < 512; x += sq) {
+        const isBorder = y < 24 || y >= 104 || x < 48 || x >= 464;
+        if (isBorder) {
+          bctx.fillStyle = ((x / sq) + (y / sq)) % 2 === 0 ? '#ffffff' : '#0f172a';
+        } else {
+          bctx.fillStyle = '#0f172a';
+        }
+        bctx.fillRect(x, y, sq, sq);
+      }
+    }
+    bctx.fillStyle = '#ff4d29';
+    bctx.font = '900 44px Outfit, sans-serif';
+    bctx.textAlign = 'center';
+    bctx.textBaseline = 'middle';
+    bctx.fillText('GHAT RUSH · FINISH', 256, 66);
+
+    const bannerTex = new THREE.CanvasTexture(bannerCanvas);
+    bannerTex.needsUpdate = true;
+
+    const pillarG = new THREE.CylinderGeometry(0.24, 0.28, 7.6, 8);
+    const trussG = new THREE.BoxGeometry(gantryW + 0.8, 0.45, 0.45);
+    const frameGeo = mergeColoredParts([
+      { geo: pillarG, color: 0xe11d48, pos: [-gantryW / 2, 3.8, 0] },
+      { geo: pillarG, color: 0xe11d48, pos: [gantryW / 2, 3.8, 0] },
+      { geo: trussG, color: 0x1e293b, pos: [0, 7.5, 0] }
+    ]);
+    pillarG.dispose();
+    trussG.dispose();
+
+    const frameMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.55 });
+    gantryGrp.add(new THREE.Mesh(frameGeo, frameMat));
+
+    const bannerMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(gantryW - 0.6, 1.55, 0.16),
+      new THREE.MeshBasicMaterial({ map: bannerTex })
+    );
+    bannerMesh.position.set(0, 6.75, 0);
+    gantryGrp.add(bannerMesh);
+
+    // Fluttering side flags
+    const flagGeo = new THREE.PlaneGeometry(1.4, 0.9, 4, 1);
+    flagGeo.translate(0.7, 0, 0);
+    const flagMat = new THREE.MeshBasicMaterial({ color: 0xff4d29, side: THREE.DoubleSide });
+    this.finishFlags = [];
+    for (const side of [-1, 1]) {
+      const flag = new THREE.Mesh(flagGeo, flagMat);
+      flag.position.set(side * (gantryW / 2), 7.95, 0);
+      if (side === 1) flag.rotation.y = Math.PI;
+      gantryGrp.add(flag);
+      this.finishFlags.push({ mesh: flag, side });
+    }
+
+    (this.getSectorForS(0)?.group || this.group).add(gantryGrp);
   }
 
   getSurfaceGrip() {
@@ -1259,6 +1329,13 @@ export class Scenery {
       this.waterfalls[0].tex.offset.y = -(timeSec * 1.6) % 1;
       for (const wf of this.waterfalls) {
         wf.spray.scale.setScalar(1.0 + Math.sin(timeSec * 4.2 + wf.seed) * 0.14);
+      }
+    }
+
+    // 5. Animate Finish Gantry Flags
+    if (this.finishFlags) {
+      for (const f of this.finishFlags) {
+        f.mesh.rotation.y = (f.side === 1 ? Math.PI : 0) + Math.sin(timeSec * 6.5 + f.side) * 0.28;
       }
     }
   }

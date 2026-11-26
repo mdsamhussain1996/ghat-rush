@@ -32,6 +32,9 @@ export class ResultsScreen {
       nearMisses = 0,
       bestLap,
       topSpeedKmh = 0,
+      avgSpeedKmh = 0,
+      personalBestTime = null,
+      isNewRecord = false,
       scoreBreakdown = { nearMissPoints: 0, draftPoints: 0, cleanPoints: 0, positionBonus: 0, totalScore: 0 },
       objectives = [],
       hasNextRace = false,
@@ -42,6 +45,7 @@ export class ResultsScreen {
     const isPodium = position <= 3;
     const timeFormatted = this.formatTime(raceTime);
     const bestLapFormatted = this.formatTime(bestLap);
+    const personalBestFormatted = this.formatTime(personalBestTime || raceTime);
 
     const objectivesHtml = objectives.length > 0
       ? `<div class="results-objectives">${objectives.map(o =>
@@ -52,34 +56,35 @@ export class ResultsScreen {
     this.root.innerHTML = `
       <div class="results-card">
         <h1 class="results-title ${isPodium ? 'victory-title' : ''}">${position === 1 ? 'VICTORY!' : (isPodium ? 'PODIUM FINISH!' : 'RACE FINISHED')}</h1>
+        ${isNewRecord ? `<div class="new-record-badge">★ NEW PERSONAL RECORD! ★</div>` : ''}
         <div class="results-position-badge">
           <span class="pos-big">${position}</span><span class="pos-sub">/${totalRacers}</span>
         </div>
 
         <div class="results-stats-grid">
           <div class="stat-box">
-            <div class="stat-label">TOTAL TIME</div>
+            <div class="stat-label">FINAL TIME</div>
             <div class="stat-value">${timeFormatted}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">PERSONAL BEST</div>
+            <div class="stat-value text-accent" id="res-personal-best">${personalBestFormatted}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">TOP / AVG SPEED</div>
+            <div class="stat-value" id="res-top-speed">${topSpeedKmh} / ${avgSpeedKmh} km/h</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">BEST LAP</div>
             <div class="stat-value" id="res-best-lap">${bestLapFormatted}</div>
           </div>
           <div class="stat-box">
-            <div class="stat-label">TOP SPEED</div>
-            <div class="stat-value" id="res-top-speed">${topSpeedKmh} km/h</div>
-          </div>
-          <div class="stat-box">
             <div class="stat-label">TOTAL SCORE</div>
             <div class="stat-value text-accent" id="res-total-score">${scoreBreakdown.totalScore.toLocaleString('en-IN')}</div>
           </div>
           <div class="stat-box">
-            <div class="stat-label">NEAR MISSES</div>
-            <div class="stat-value">${nearMisses} <span class="stat-mini">(+${scoreBreakdown.nearMissPoints})</span></div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-label">PRIZE MONEY</div>
-            <div class="stat-value text-gold">+₹ ${cashWon.toLocaleString('en-IN')}</div>
+            <div class="stat-label">PRIZE &amp; NEAR MISSES</div>
+            <div class="stat-value text-gold">+₹ ${cashWon.toLocaleString('en-IN')} <span class="stat-mini">(${nearMisses} NM)</span></div>
           </div>
           <div class="stat-box" style="grid-column: 1 / -1;">
             <div class="stat-label">SCORE BREAKDOWN · DRAFT +${scoreBreakdown.draftPoints} · CLEAN +${scoreBreakdown.cleanPoints} · FINISH +${scoreBreakdown.positionBonus}</div>
@@ -91,13 +96,26 @@ export class ResultsScreen {
         <div class="results-actions">
           ${hasNextRace ? `<button id="btn-next-race" class="btn btn-primary">NEXT RACE</button>` : ''}
           <button id="btn-replay" class="btn btn-secondary">WATCH REPLAY</button>
-          <button id="btn-restart" class="btn ${hasNextRace ? 'btn-secondary' : 'btn-primary'}">RACE AGAIN</button>
+          <button id="btn-restart" class="btn ${hasNextRace ? 'btn-secondary' : 'btn-primary'}">RACE AGAIN (R)</button>
           <button id="btn-menu" class="btn btn-secondary">MAIN MENU</button>
         </div>
       </div>
     `;
 
     this.root.classList.remove('hidden');
+
+    if (this._keyHandler) {
+      window.removeEventListener('keydown', this._keyHandler);
+    }
+    this._keyHandler = (e) => {
+      if (this.root.classList.contains('hidden')) return;
+      if (e.code === 'KeyR' || e.code === 'Enter') {
+        e.preventDefault();
+        this.hide();
+        this.onRestart?.();
+      }
+    };
+    window.addEventListener('keydown', this._keyHandler);
 
     const nextBtn = document.getElementById('btn-next-race');
     if (nextBtn) {
@@ -125,5 +143,9 @@ export class ResultsScreen {
 
   hide() {
     this.root.classList.add('hidden');
+    if (this._keyHandler) {
+      window.removeEventListener('keydown', this._keyHandler);
+      this._keyHandler = null;
+    }
   }
 }

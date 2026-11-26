@@ -112,6 +112,31 @@ export class TrackBuilder {
 
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.receiveShadow = true;
+
+    // Add checkered start/finish asphalt strip at s = 0
+    const finishCanvas = document.createElement('canvas');
+    finishCanvas.width = 256;
+    finishCanvas.height = 64;
+    const fctx = finishCanvas.getContext('2d');
+    const sq = 16;
+    for (let y = 0; y < 64; y += sq) {
+      for (let x = 0; x < 256; x += sq) {
+        const even = ((x / sq) + (y / sq)) % 2 === 0;
+        fctx.fillStyle = even ? '#f8fafc' : '#0f172a';
+        fctx.fillRect(x, y, sq, sq);
+      }
+    }
+    const finishTex = new THREE.CanvasTexture(finishCanvas);
+    finishTex.needsUpdate = true;
+    const finishMat = new THREE.MeshBasicMaterial({ map: finishTex, polygonOffset: true, polygonOffsetFactor: -2 });
+    const finishGeo = new THREE.PlaneGeometry(this.roadWidth - 0.6, 3.2);
+    finishGeo.rotateX(-Math.PI / 2);
+    const finishStrip = new THREE.Mesh(finishGeo, finishMat);
+    const startFrame = this.spline.getFrameAtDistance(0);
+    finishStrip.position.copy(startFrame.position).addScaledVector(startFrame.normal, 0.03);
+    finishStrip.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), startFrame.tangent);
+    this.mesh.add(finishStrip);
+
     return this.mesh;
   }
 

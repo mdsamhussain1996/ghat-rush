@@ -101,6 +101,8 @@ export class Bike {
     this.hadCrashThisLap = false;
     this.cleanLapsCount = 0;
     this.cleanMeters = 0;
+    this.totalDistanceMeters = 0;
+    this.totalDistanceMeters = 0;
 
     // Visual effect states
     this.brakeGlow = 0;
@@ -241,7 +243,7 @@ export class Bike {
     }
     [screenG, hlG, plateG, calG, forkG, stanchG, barG, stemG, mirrorG, exhG].forEach(g => g.dispose());
 
-    // Taillight bar
+    // Taillight bar (brightens on braking)
     this.tailLightMat = this.isPlayer ? new THREE.MeshBasicMaterial({ color: 0xff1744 }) : null;
     this.tailLight = new THREE.Mesh(
       new THREE.BoxGeometry(0.38, 0.09, 0.06),
@@ -249,6 +251,37 @@ export class Bike {
     );
     this.tailLight.position.set(0, 0.76, -0.76);
     this.bikeMesh.add(this.tailLight);
+
+    // Player Headlight Cone & Dynamic Ground Shadow
+    if (this.isPlayer) {
+      const coneGeo = new THREE.ConeGeometry(1.15, 7.5, 12, 1, true);
+      coneGeo.translate(0, -3.75, 0);
+      coneGeo.rotateX(-Math.PI / 2);
+      const coneMat = new THREE.MeshBasicMaterial({
+        color: 0xfff3d1,
+        transparent: true,
+        opacity: 0.085,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      this.headlightCone = new THREE.Mesh(coneGeo, coneMat);
+      this.headlightCone.position.set(0, 0.74, 1.24);
+      this.bikeMesh.add(this.headlightCone);
+
+      const shadowGeo = new THREE.CircleGeometry(0.95, 16);
+      shadowGeo.rotateX(-Math.PI / 2);
+      shadowGeo.scale(0.62, 1, 1.45);
+      const shadowMat = new THREE.MeshBasicMaterial({
+        color: 0x05070c,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false
+      });
+      this.groundShadow = new THREE.Mesh(shadowGeo, shadowMat);
+      this.groundShadow.position.set(0, 0.02, 0.05);
+      this.group.add(this.groundShadow);
+    }
 
     // 3. Merged Wheels (Tyre + Alloy Rim -> 1 draw call per wheel)
     const tireG = new THREE.CylinderGeometry(0.32, 0.32, 0.16, 12);
@@ -465,6 +498,7 @@ export class Bike {
     if (kmh > this.topSpeedReachedKmh) this.topSpeedReachedKmh = kmh;
 
     // 4. Advance distance along track
+    this.totalDistanceMeters += this.speed * dt;
     if (this.speed > 18) {
       this.cleanMeters += this.speed * dt;
     }
@@ -750,6 +784,8 @@ export class Bike {
     this.hadCrashThisLap = false;
     this.cleanLapsCount = 0;
     this.cleanMeters = 0;
+    this.totalDistanceMeters = 0;
+    this.totalDistanceMeters = 0;
     this.rider.resetPose();
     this.isSliding = false;
     this.isDrifting = false;
@@ -843,10 +879,25 @@ export class Bike {
       this.bikeMesh.rotation.x = totalPitch;
       this.bikeMesh.position.y = this.wheelie * 0.25 - (this.brakeDive || 0) * 0.12;
 
+      // Sync standardized aliases for external inspection
+      this.leanAngle = this.lean;
+      this.pitchAngle = totalPitch;
+      this.handlebarAngle = this.steerAngle || 0;
+
       if (this.steerGroup) {
         this.steerGroup.rotation.y = this.steerAngle || 0;
         // Subtle front fork suspension compression under braking
         this.steerGroup.position.y = -(this.brakeDive || 0) * 0.14;
+      }
+
+      if (this.groundShadow) {
+        this.groundShadow.position.x = -Math.sin(this.lean) * 0.42;
+        const shadowScale = 1.0 - this.wheelie * 0.25;
+        this.groundShadow.scale.set(
+          shadowScale * (1.0 + Math.abs(this.lean) * 0.22),
+          1,
+          shadowScale
+        );
       }
     }
   }
