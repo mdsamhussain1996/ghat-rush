@@ -32,6 +32,8 @@ export class SaveManager {
       bestLaps: {},
       settings: {
         audioMuted: false,
+        musicVolume: 0.7,
+        sfxVolume: 0.8,
         controlMode: 'buttons',
         quality: 'auto', // 'auto', 'low', 'medium', 'high'
         cameraView: 'chase',

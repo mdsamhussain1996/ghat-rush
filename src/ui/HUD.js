@@ -9,6 +9,8 @@
  * - Dynamic combo popups ("NEAR MISS! +150 · COMBO x3", "SLIPSTREAM +8%")
  * - Mobile touch buttons
  */
+import { audio } from '../core/Audio.js';
+
 export class HUD {
   constructor(container, input, callbacks = {}) {
     this.container = container || document.body;
@@ -37,7 +39,18 @@ export class HUD {
       <div id="hud-top-right">
         <div id="hud-controls-bar">
           <button id="hud-mute-btn" class="hud-icon-btn" title="Toggle Audio (M)">🔊</button>
+          <button id="hud-mixer-btn" class="hud-icon-btn" title="Music & SFX Volume">🎚</button>
           <button id="hud-pause-btn" class="hud-icon-btn" title="Pause Game (Esc / P)">⏸</button>
+          <div id="hud-audio-mixer" class="hud-audio-mixer hidden">
+            <label class="hud-vol-row">
+              <span>BGM</span>
+              <input id="hud-music-slider" type="range" min="0" max="1" step="0.05" value="${audio.musicVolume}" />
+            </label>
+            <label class="hud-vol-row">
+              <span>SFX</span>
+              <input id="hud-sfx-slider" type="range" min="0" max="1" step="0.05" value="${audio.sfxVolume}" />
+            </label>
+          </div>
         </div>
         <canvas id="minimap-canvas" width="160" height="90"></canvas>
       </div>
@@ -100,6 +113,10 @@ export class HUD {
     this.raceBannerEl = document.getElementById('hud-race-banner');
     this.objectivesEl = document.getElementById('hud-objectives');
     this.muteBtn = document.getElementById('hud-mute-btn');
+    this.mixerBtn = document.getElementById('hud-mixer-btn');
+    this.audioMixerEl = document.getElementById('hud-audio-mixer');
+    this.musicSliderEl = document.getElementById('hud-music-slider');
+    this.sfxSliderEl = document.getElementById('hud-sfx-slider');
     this.activeNearMissEl = null;
     this.nearMissFadeTimeout = null;
     this.nearMissRemoveTimeout = null;
@@ -123,19 +140,47 @@ export class HUD {
     if (this.muteBtn) {
       this.muteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        audio.playUIClick();
         this.callbacks.onToggleMute?.();
         this.muteBtn.blur();
+      });
+    }
+    if (this.mixerBtn && this.audioMixerEl) {
+      this.mixerBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        audio.playUIClick();
+        this.syncVolumeSliders();
+        this.audioMixerEl.classList.toggle('hidden');
+        this.mixerBtn.blur();
+      });
+    }
+    if (this.musicSliderEl) {
+      this.musicSliderEl.addEventListener('input', (e) => {
+        e.stopPropagation();
+        audio.setMusicVolume(parseFloat(e.target.value));
+      });
+    }
+    if (this.sfxSliderEl) {
+      this.sfxSliderEl.addEventListener('input', (e) => {
+        e.stopPropagation();
+        audio.setSfxVolume(parseFloat(e.target.value));
       });
     }
     if (this.pauseBtn) {
       this.pauseBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        audio.playUIClick();
         this.callbacks.onPause?.();
         this.pauseBtn.blur();
       });
     }
 
     this.bindTouchControls();
+  }
+
+  syncVolumeSliders() {
+    if (this.musicSliderEl) this.musicSliderEl.value = String(audio.musicVolume);
+    if (this.sfxSliderEl) this.sfxSliderEl.value = String(audio.sfxVolume);
   }
 
   syncMuteState(muted) {

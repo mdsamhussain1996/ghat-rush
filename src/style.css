@@ -106,9 +106,48 @@ html, body {
 }
 
 #hud-controls-bar {
+  position: relative;
   display: flex;
   gap: 8px;
   pointer-events: auto;
+}
+
+.hud-audio-mixer {
+  position: absolute;
+  top: 48px;
+  right: 0;
+  width: 175px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 40;
+}
+
+.hud-audio-mixer.hidden {
+  display: none;
+}
+
+.hud-vol-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #cbd5e1;
+}
+
+.hud-vol-row input[type="range"] {
+  width: 110px;
+  accent-color: #ff4d29;
+  cursor: pointer;
 }
 
 .hud-icon-btn {

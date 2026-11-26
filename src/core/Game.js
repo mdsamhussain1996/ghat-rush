@@ -251,17 +251,22 @@ export class Game {
     window.addEventListener('orientationchange', this.updateViewportAndTouchState);
     this.updateViewportAndTouchState();
 
-    // Audio unlock listener on first user interaction
+    // Audio unlock listener on first user interaction (click, key, touch, or gamepad press)
     const unlockAudio = () => {
       audio.init();
       audio.playMusic();
       window.removeEventListener('click', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
       window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('pointerdown', unlockAudio);
     };
     window.addEventListener('click', unlockAudio);
     window.addEventListener('keydown', unlockAudio);
     window.addEventListener('touchstart', unlockAudio);
+    window.addEventListener('pointerdown', unlockAudio);
+    if (this.input) {
+      this.input.onFirstInteraction = unlockAudio;
+    }
   }
 
   disposeSession() {
@@ -340,6 +345,15 @@ export class Game {
       this.slowMoTimer = 0.3;
       this.cameraRig.triggerCrashShake(type === 'traffic' ? 0.55 : 0.42);
       this.hud.showPopup(type === 'traffic' ? 'TRAFFIC IMPACT!' : 'RAIL CRASH!', 'SLOW-MO RECOVERY', 'crash');
+    };
+
+    this.playerBike.onRailScrape = (intensity = 0.6) => {
+      this.cameraRig.triggerCrashShake(0.18 + intensity * 0.14);
+      this.postFX.emitSparks(Math.sign(this.playerBike.d || 1), intensity);
+      if (this.playerBike.railScrapeCooldown <= 0) {
+        this.playerBike.railScrapeCooldown = 0.22;
+        audio.playRailScrape(intensity);
+      }
     };
 
     // Rivals (with optional Career Boss override)
@@ -558,9 +572,11 @@ export class Game {
         this.lastLap = this.playerBike.lap;
 
         if (this.playerBike.lap > this.totalLaps) {
+          audio.playCheckpoint();
           this.finishRace();
           return;
         } else {
+          audio.playCheckpoint();
           this.hud.showPopup(`LAP ${this.playerBike.lap} / ${this.totalLaps}`, 'PUSH IT!', 'lap');
         }
       }
@@ -590,7 +606,7 @@ export class Game {
 
       this.cameraRig.update(dt, this.playerBike, activeTraffic);
       this.sky.update(this.playerBike, dt);
-      this.postFX.update(simDt, this.playerBike);
+      this.postFX.update(simDt, this.playerBike, this.cameraRig.camera);
       this.hud.update(simDt, this.playerBike, rivalsBikes, this.raceTime, this.totalLaps);
     } else if (this.state === 'FINISHED') {
       this.finishTimer += dt;
@@ -598,7 +614,7 @@ export class Game {
       this.playerBike.update(dt, { throttle: 0, brake: 0.4, steer: 0, nitro: false, wheelie: false }, [], []);
       this.cameraRig.updateFinishSweep(dt, this.playerBike, this.finishTimer);
       this.sky.update(this.playerBike, dt);
-      this.postFX.update(dt, this.playerBike);
+      this.postFX.update(dt, this.playerBike, this.cameraRig.camera);
     } else if (this.state === 'REPLAY') {
       this.updateReplay(dt);
     }
@@ -642,7 +658,7 @@ export class Game {
 
     this.cameraRig.updateReplay(dt, this.playerBike, this.replayTime, this.traffic.getActiveList());
     this.sky.update(this.playerBike, dt);
-    this.postFX.update(dt, this.playerBike);
+    this.postFX.update(dt, this.playerBike, this.cameraRig.camera);
   }
 
   render(alpha, currentTime) {
@@ -780,6 +796,7 @@ export class Game {
     this.replayBanner.classList.add('hidden');
     this.hud.show();
     this.hud.clearPopups();
+    this.postFX?.clear();
 
     this.state = 'COUNTDOWN';
     this.countdownTimer = 3.8;

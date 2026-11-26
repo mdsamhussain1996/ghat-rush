@@ -78,14 +78,15 @@ export class CameraRig {
       lookUpDist = 0.80;
     }
 
-    // High speed pulls camera slightly further back for sense of speed
-    offsetBack += speedRatio * 0.75;
+    // High speed pulls camera slightly further back for sense of speed (camera lag)
+    const accelLag = THREE.MathUtils.clamp((playerBike.longitudinalAccel || 0) * 0.025, -0.25, 0.45);
+    offsetBack += speedRatio * 0.85 + accelLag;
 
-    // Target Camera Position: behind bike along Frenet tangent
+    // Target Camera Position: behind bike along Frenet tangent with subtle cornering lateral lag
     const targetPos = bikePos.clone()
       .addScaledVector(frame.tangent, -offsetBack)
       .addScaledVector(frame.normal, offsetUp)
-      .addScaledVector(frame.binormal, playerBike.d * 0.12); // subtle lateral lag
+      .addScaledVector(frame.binormal, playerBike.d * 0.12 + playerBike.lean * 0.35);
 
     // Camera Collision Avoidance with Vehicles (Bug A.3: prevent truck clipping into screen)
     if (activeTraffic && activeTraffic.length > 0) {
@@ -104,19 +105,24 @@ export class CameraRig {
       }
     }
 
-    // Target Look-At: road ahead of the bike
+    // Target Look-At: road ahead of the bike, shifting slightly into the apex when leaning
     const targetLookAt = bikePos.clone()
       .addScaledVector(frame.tangent, lookAheadDist)
-      .addScaledVector(frame.normal, lookUpDist);
+      .addScaledVector(frame.normal, lookUpDist)
+      .addScaledVector(frame.binormal, -playerBike.lean * 1.35);
 
-    // 3. Camera Shake
+    // 3. Camera Shake (High-speed wind vibration + Drift slip + Off-Road rumble + Impact shake)
     if (this.crashShakeTimer > 0) {
       this.crashShakeTimer = Math.max(0, this.crashShakeTimer - dt);
     }
     const crashShake = this.crashShakeTimer > 0
       ? (this.crashShakeTimer / 0.45) * this.crashShakeAmount
       : 0;
-    this.shakeIntensity = Math.max(0, (speedKmh - 190) / 130) * 0.045 + (playerBike.isSliding ? 0.06 : 0) + crashShake;
+    const offRoadShake = (playerBike.offRoadFactor || 0) * 0.075 * Math.min(1, speedKmh / 90);
+    this.shakeIntensity = Math.max(0, (speedKmh - 190) / 130) * 0.045
+      + (playerBike.isSliding ? 0.06 : 0)
+      + offRoadShake
+      + crashShake;
     if (this.shakeIntensity > 0) {
       const shakeX = (Math.random() - 0.5) * this.shakeIntensity;
       const shakeY = (Math.random() - 0.5) * this.shakeIntensity;

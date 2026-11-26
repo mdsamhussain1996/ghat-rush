@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Rider } from './Rider.js';
 import { audio } from '../core/Audio.js';
+import { BikePhysics } from '../core/Physics.js';
 import { mergeColoredParts, mergePlainParts } from '../render/GeomMerge.js';
 
 // Shared static resources across AI rivals to minimize draw calls & shader switches
@@ -14,10 +15,10 @@ let SHARED_BIKE_FLAME_MAT = null;
 /**
  * Bike Entity — 3D Motorcycle Model & Road-Space Arcade Physics
  * Features:
- * - High-fidelity original procedural bike geometry (fairings, alloy rims, brake discs, gold forks, mirrors, heat-tint exhaust)
- * - Speed-sensitive steering with 0.15s smooth input ramp
- * - Lane assist against guardrails on normal conditions
- * - Realistic rail scrape wobble vs severe impact crash
+ * - High-fidelity original procedural bike geometry with articulated steerable front fork/handlebar group
+ * - Controller-synchronized lean/bank angle, front wheel steering, acceleration squat, and brake nose-dive
+ * - Realistic arcade ghat road physics via BikePhysics (non-linear torque curve, engine braking, slope gravity,
+ *   centrifugal cornering drift, shoulder off-road resistance, and smooth guardrail deflection)
  * - Crash containment inside barriers & 1.5s ghost invulnerability
  * - Strict slipstream drafting (speed > 80 km/h, 4-16m ahead, |Δd| < 1.2m, 0.5s persistence)
  * - Brake disc heating glow & exhaust nitro flames
@@ -45,28 +46,39 @@ export class Bike {
     this.s = 0; // Distance along track (m)
     this.d = 0; // Lateral offset from centerline (m)
     this.speed = 0; // Current speed (m/s)
+    this.lateralVel = 0;
+    this.longitudinalAccel = 0;
     this.lean = 0; // Current lean angle (rad)
+    this.steerAngle = 0; // Visual front fork / handlebar steer angle (rad)
+    this.accelSquat = 0; // Rear squat pitch under hard acceleration (rad)
+    this.brakeDive = 0; // Forward nose-dive pitch under braking (rad)
     this.wheelie = 0; // 0 to 1 wheelie pitch
     this.stoppie = 0; // 0 to 1 stoppie pitch
     this.gear = 1;
     this.rpmRatio = 0.1; // 0 to 1
 
-    // Steering Smoothing & Rail Assist (Phase 0 Fixes)
+    // Steering Smoothing & Rail Assist
     this.steerSmoothed = 0;
     this.steerTapCount = 0;
     this.lastSteerSign = 0;
     this.preCrashSpeed = 0;
     this.onRespawn = null;
+    this.onRailScrape = null;
+    this.railScrapeCooldown = 0;
     this.wobbleTimer = 0;
     this.wobbleMagnitude = 0;
     this.ghostTimer = 0; // Invulnerability timer after respawn
 
     // Gameplay States
     this.isNitro = false;
+    this.wasNitro = false;
     this.isDrafting = false;
     this.draftTimer = 0;
     this.draftPersistTimer = 0; // Must persist 0.5s before bonus triggers
     this.isSliding = false;
+    this.isDrifting = false;
+    this.isOffRoad = false;
+    this.offRoadFactor = 0;
     this.isWrongWay = false;
     this.slideAngle = 0;
     this.isCrashed = false;
@@ -161,7 +173,7 @@ export class Bike {
     this.bodyMesh.castShadow = true;
     this.bikeMesh.add(this.bodyMesh);
 
-    // 2. Merged Hardware / Chassis Details (Windscreen, Lights, Plate, Forks, Bars, Mirrors, Exhausts) -> 1 draw call
+    // 2. Chassis & Steerable Front Assembly
     const screenG = new THREE.BoxGeometry(0.32, 0.26, 0.04);
     const hlG = new THREE.BoxGeometry(0.12, 0.06, 0.06);
     const plateG = new THREE.BoxGeometry(0.18, 0.14, 0.02);
@@ -173,26 +185,61 @@ export class Bike {
     const mirrorG = new THREE.BoxGeometry(0.10, 0.06, 0.03);
     const exhG = new THREE.CylinderGeometry(0.05, 0.065, 0.48, 6);
 
-    const detailGeo = mergeColoredParts([
-      { geo: screenG, color: 0x112233, pos: [0, 0.94, 0.72], rot: [-Math.PI / 3.0, 0, 0] },
-      { geo: hlG, color: 0xffffff, pos: [-0.13, 0.74, 1.20] },
-      { geo: hlG, color: 0xffffff, pos: [0.13, 0.74, 1.20] },
-      { geo: plateG, color: 0xffffff, pos: [0, 0.82, 1.05], rot: [-Math.PI / 4, 0, 0] },
-      { geo: calG, color: 0xd4af37, pos: [0.10, 0.38, 0.86] },
-      { geo: forkG, color: 0xd4af37, pos: [-0.14, 0.64, 0.88], rot: [-0.32, 0, 0] },
-      { geo: forkG, color: 0xd4af37, pos: [0.14, 0.64, 0.88], rot: [-0.32, 0, 0] },
-      { geo: stanchG, color: 0xdde4ed, pos: [-0.14, 0.44, 0.94], rot: [-0.32, 0, 0] },
-      { geo: stanchG, color: 0xdde4ed, pos: [0.14, 0.44, 0.94], rot: [-0.32, 0, 0] },
-      { geo: barG, color: 0x1f232b, pos: [0, 0.90, 0.65], rot: [0, 0, Math.PI / 2] },
-      { geo: stemG, color: 0x1f232b, pos: [-0.30, 0.94, 0.68], rot: [0, 0, -0.45] },
-      { geo: stemG, color: 0x1f232b, pos: [0.30, 0.94, 0.68], rot: [0, 0, 0.45] },
-      { geo: mirrorG, color: 0x1f232b, pos: [-0.36, 1.00, 0.68] },
-      { geo: mirrorG, color: 0x1f232b, pos: [0.36, 1.00, 0.68] },
-      { geo: exhG, color: 0x4876a8, pos: [-0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] },
-      { geo: exhG, color: 0x4876a8, pos: [0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] }
-    ]);
+    // Pivot for front steering head at z = 0.78
+    const pivotZ = 0.78;
+    this.steerGroup = new THREE.Group();
+    this.steerGroup.position.set(0, 0, pivotZ);
+    this.bikeMesh.add(this.steerGroup);
+
+    if (this.isPlayer) {
+      // Player bike separates fixed chassis details from steerable handlebars/forks/mirrors
+      const fixedDetailGeo = mergeColoredParts([
+        { geo: screenG, color: 0x112233, pos: [0, 0.94, 0.72], rot: [-Math.PI / 3.0, 0, 0] },
+        { geo: hlG, color: 0xffffff, pos: [-0.13, 0.74, 1.20] },
+        { geo: hlG, color: 0xffffff, pos: [0.13, 0.74, 1.20] },
+        { geo: plateG, color: 0xffffff, pos: [0, 0.82, 1.05], rot: [-Math.PI / 4, 0, 0] },
+        { geo: exhG, color: 0x4876a8, pos: [-0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] },
+        { geo: exhG, color: 0x4876a8, pos: [0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] }
+      ]);
+      this.bikeMesh.add(new THREE.Mesh(fixedDetailGeo, detailMat));
+
+      const steerDetailGeo = mergeColoredParts([
+        { geo: calG, color: 0xd4af37, pos: [0.10, 0.38, 0.86 - pivotZ] },
+        { geo: forkG, color: 0xd4af37, pos: [-0.14, 0.64, 0.88 - pivotZ], rot: [-0.32, 0, 0] },
+        { geo: forkG, color: 0xd4af37, pos: [0.14, 0.64, 0.88 - pivotZ], rot: [-0.32, 0, 0] },
+        { geo: stanchG, color: 0xdde4ed, pos: [-0.14, 0.44, 0.94 - pivotZ], rot: [-0.32, 0, 0] },
+        { geo: stanchG, color: 0xdde4ed, pos: [0.14, 0.44, 0.94 - pivotZ], rot: [-0.32, 0, 0] },
+        { geo: barG, color: 0x1f232b, pos: [0, 0.90, 0.65 - pivotZ], rot: [0, 0, Math.PI / 2] },
+        { geo: stemG, color: 0x1f232b, pos: [-0.30, 0.94, 0.68 - pivotZ], rot: [0, 0, -0.45] },
+        { geo: stemG, color: 0x1f232b, pos: [0.30, 0.94, 0.68 - pivotZ], rot: [0, 0, 0.45] },
+        { geo: mirrorG, color: 0x1f232b, pos: [-0.36, 1.00, 0.68 - pivotZ] },
+        { geo: mirrorG, color: 0x1f232b, pos: [0.36, 1.00, 0.68 - pivotZ] }
+      ]);
+      this.steerHardwareMesh = new THREE.Mesh(steerDetailGeo, detailMat);
+      this.steerGroup.add(this.steerHardwareMesh);
+    } else {
+      // Rivals merge all hardware into 1 draw call while still steering their front wheel via steerGroup
+      const detailGeo = mergeColoredParts([
+        { geo: screenG, color: 0x112233, pos: [0, 0.94, 0.72], rot: [-Math.PI / 3.0, 0, 0] },
+        { geo: hlG, color: 0xffffff, pos: [-0.13, 0.74, 1.20] },
+        { geo: hlG, color: 0xffffff, pos: [0.13, 0.74, 1.20] },
+        { geo: plateG, color: 0xffffff, pos: [0, 0.82, 1.05], rot: [-Math.PI / 4, 0, 0] },
+        { geo: calG, color: 0xd4af37, pos: [0.10, 0.38, 0.86] },
+        { geo: forkG, color: 0xd4af37, pos: [-0.14, 0.64, 0.88], rot: [-0.32, 0, 0] },
+        { geo: forkG, color: 0xd4af37, pos: [0.14, 0.64, 0.88], rot: [-0.32, 0, 0] },
+        { geo: stanchG, color: 0xdde4ed, pos: [-0.14, 0.44, 0.94], rot: [-0.32, 0, 0] },
+        { geo: stanchG, color: 0xdde4ed, pos: [0.14, 0.44, 0.94], rot: [-0.32, 0, 0] },
+        { geo: barG, color: 0x1f232b, pos: [0, 0.90, 0.65], rot: [0, 0, Math.PI / 2] },
+        { geo: stemG, color: 0x1f232b, pos: [-0.30, 0.94, 0.68], rot: [0, 0, -0.45] },
+        { geo: stemG, color: 0x1f232b, pos: [0.30, 0.94, 0.68], rot: [0, 0, 0.45] },
+        { geo: mirrorG, color: 0x1f232b, pos: [-0.36, 1.00, 0.68] },
+        { geo: mirrorG, color: 0x1f232b, pos: [0.36, 1.00, 0.68] },
+        { geo: exhG, color: 0x4876a8, pos: [-0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] },
+        { geo: exhG, color: 0x4876a8, pos: [0.15, 0.52, -0.74], rot: [Math.PI / 2, 0, 0] }
+      ]);
+      this.bikeMesh.add(new THREE.Mesh(detailGeo, detailMat));
+    }
     [screenG, hlG, plateG, calG, forkG, stanchG, barG, stemG, mirrorG, exhG].forEach(g => g.dispose());
-    this.bikeMesh.add(new THREE.Mesh(detailGeo, detailMat));
 
     // Taillight bar
     this.tailLightMat = this.isPlayer ? new THREE.MeshBasicMaterial({ color: 0xff1744 }) : null;
@@ -214,9 +261,9 @@ export class Bike {
     rimG.dispose();
 
     this.frontWheel = new THREE.Mesh(wheelGeo, wheelMat);
-    this.frontWheel.position.set(0, 0.32, 0.95);
+    this.frontWheel.position.set(0, 0.32, 0.95 - pivotZ);
     this.frontWheel.castShadow = this.isPlayer;
-    this.bikeMesh.add(this.frontWheel);
+    this.steerGroup.add(this.frontWheel);
 
     this.rearWheel = new THREE.Mesh(wheelGeo, wheelMat);
     this.rearWheel.position.set(0, 0.32, -0.75);
@@ -289,7 +336,13 @@ export class Bike {
     return this.updatePhysics(dt, controls, trafficList, rivalsList);
   }
 
-  updatePhysics(dt, controls, trafficList = [], rivalsList = []) {
+  updatePhysics(rawDt, controls, trafficList = [], rivalsList = []) {
+    const dt = BikePhysics.clampDt(rawDt);
+
+    if (this.railScrapeCooldown > 0) {
+      this.railScrapeCooldown = Math.max(0, this.railScrapeCooldown - dt);
+    }
+
     // 0. Crash recovery state
     if (this.isCrashed) {
       this.crashTimer -= dt;
@@ -322,7 +375,7 @@ export class Bike {
       return;
     }
 
-    // Ghost invulnerability timer (transparent toggled once on entry/exit; only opacity flashes per frame)
+    // Ghost invulnerability timer
     if (this.ghostTimer > 0) {
       this.ghostTimer -= dt;
       if (this.ghostTimer <= 0) {
@@ -342,8 +395,14 @@ export class Bike {
       this.wobbleMagnitude = THREE.MathUtils.lerp(this.wobbleMagnitude, 0, 5.0 * dt);
     }
 
-    // 1. Throttle, Nitro, and Acceleration Dynamics
+    // 1. Nitro activation & flames
+    const prevNitro = this.isNitro;
     this.isNitro = !!(controls.nitro && this.nitro > 0.1 && this.speed > 10);
+    if (this.isNitro && !prevNitro && this.isPlayer) {
+      audio.playNitroIgnition();
+    }
+    this.wasNitro = this.isNitro;
+
     if (this.isNitro) {
       if (this.currentNitroChain === 0) {
         this._nitroPeakAtChainStart = this.nitro;
@@ -364,29 +423,13 @@ export class Bike {
       this.currentNitroChain = 0;
       this.flameL.visible = false;
       this.flameR.visible = false;
-      // Gradual natural nitro trickle recharge
       this.nitro = Math.min(this.nitroCapacity, this.nitro + 0.12 * dt);
     }
 
-    const currentMaxSpeed = (this.topSpeedKmh / 3.6) * (this.isNitro ? 1.24 : 1.0) * (this.isDrafting ? 1.08 : 1.0);
-
-    let forwardAccel = 0;
-    if (controls.throttle > 0) {
-      const powerFactor = Math.max(0.2, 1 - (this.speed / currentMaxSpeed));
-      forwardAccel = this.accelRate * controls.throttle * powerFactor * (this.isNitro ? 1.65 : 1.0);
-    }
-
-    let brakeDecel = 0;
-    if (controls.brake > 0) {
-      brakeDecel = this.brakeRate * controls.brake;
-    }
-
-    // Tail light brightness on brake
+    // Tail light brightness & Brake disc glow
     if (this.tailLightMat) {
       this.tailLightMat.color.setHex(controls.brake > 0 ? 0xff0022 : 0xaa1111);
     }
-
-    // Brake disc heating glow
     if (controls.brake > 0.4 && this.speed > 18) {
       this.brakeGlow = Math.min(1.0, this.brakeGlow + 3.0 * dt);
     } else {
@@ -397,14 +440,10 @@ export class Bike {
       this.brakeDiscMat.emissiveIntensity = this.brakeGlow * 1.8;
     }
 
-    const aeroDrag = 0.0018 * (this.speed * this.speed);
-    const netAccel = forwardAccel - brakeDecel - aeroDrag;
-    this.speed = Math.max(0, Math.min(currentMaxSpeed, this.speed + netAccel * dt));
-
     // 2. Wheelie & Stoppie
     if (controls.wheelie && this.speed > 8 && !this.isSliding) {
       this.wheelie = Math.min(1.0, this.wheelie + 3.0 * dt);
-      this.nitro = Math.min(this.nitroCapacity, this.nitro + 0.35 * dt); // Wheelie bonus
+      this.nitro = Math.min(this.nitroCapacity, this.nitro + 0.35 * dt);
     } else {
       this.wheelie = Math.max(0, this.wheelie - 4.5 * dt);
     }
@@ -415,83 +454,13 @@ export class Bike {
       this.stoppie = Math.max(0, this.stoppie - 4.0 * dt);
     }
 
-    // 3. Steering & Lean Dynamics (Phase 0 & 1 Follow-Up: 0.6s tap = ~3.5m one lane, capped lateral speed)
-    // Detect new steer tap vs continuous hold
-    const currentSteerSign = Math.sign(controls.steer);
-    if (currentSteerSign !== 0 && currentSteerSign !== this.lastSteerSign) {
-      this.steerTapCount = (this.steerTapCount || 0) + 1;
-    } else if (currentSteerSign === 0) {
-      this.steerTapCount = 0;
-    }
-    this.lastSteerSign = currentSteerSign;
-
-    // Lean rate limited (<= 90 deg/s = 1.57 rad/s)
-    const maxLeanRate = (90 * Math.PI / 180); // 1.57 rad/s
-    const speedRatio = Math.min(1.0, this.speed / (300 / 3.6));
-    const currentMaxLean = this.maxLeanRad * (1.0 - speedRatio * 0.35); // ~50 deg down to ~32 deg
-
-    if (Math.abs(controls.steer) < 0.05) {
-      // Eases back to upright when input is released (0.3s)
-      this.steerSmoothed = THREE.MathUtils.lerp(this.steerSmoothed, 0, Math.min(1.0, dt / 0.15));
-      this.lean = THREE.MathUtils.lerp(this.lean, 0, Math.min(1.0, dt / 0.30));
-    } else {
-      // Input smoothing ramp (0.15s)
-      this.steerSmoothed = THREE.MathUtils.lerp(this.steerSmoothed, controls.steer, Math.min(1.0, dt / 0.15));
-      const targetLean = -this.steerSmoothed * currentMaxLean * (1 - this.wheelie * 0.65);
-
-      const leanDiff = targetLean - this.lean;
-      const maxLeanChange = maxLeanRate * dt;
-      this.lean += THREE.MathUtils.clamp(leanDiff, -maxLeanChange, maxLeanChange);
-    }
-
-    // Apply wobble from rail scrape if active
-    const wobbleOffset = this.wobbleTimer > 0 ? Math.sin(this.wobbleTimer * 28) * this.wobbleMagnitude : 0;
-    const effectiveLean = this.lean + wobbleOffset;
-
-    // Cornering Curvature Physics (signed curvature pushes toward outside of bend)
+    // 3. Step Modular Ghat Road Physics (Longitudinal, Slope Gravity, Lateral, Corner Drift, Off-Road, Rail Deflection)
     const frame = this.spline.getFrameAtDistance(this.s);
-    const curvature = frame.curvature || 0;
-    const gripLimitVel = 6.9 * (0.78 + 0.28 * this.handling) * this.tyreGripBonus * this.surfaceGrip;
-    const leanFrac = THREE.MathUtils.clamp(-effectiveLean / Math.max(0.25, currentMaxLean), -1.0, 1.0);
-    let steerVel = leanFrac * gripLimitVel;
-    const driftVel = curvature * (this.speed * this.speed) * 0.21;
-    this.gripDemandRatio = Math.abs(driftVel) / Math.max(1.0, gripLimitVel);
-    this.isSliding = (this.gripDemandRatio > 0.90 && this.speed > 25);
-
-    // Road Edge Limits & Straight-line Rail Assist
-    const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
-    const distToRail = halfWidth - Math.abs(this.d);
-    const steeringTowardRail = (this.d > 0 && controls.steer > 0.08) || (this.d < 0 && controls.steer < -0.08);
-
-    if (distToRail < 1.2 && Math.abs(curvature) < 0.0025) {
-      if (!steeringTowardRail) {
-        this.d -= Math.sign(this.d) * (1.2 - distToRail) * 3.5 * dt;
-      } else if (this.steerTapCount < 2) {
-        steerVel *= 0.18;
-      }
+    const stepResult = BikePhysics.step(this, dt, controls, frame);
+    if (stepResult.crashed) {
+      return;
     }
 
-    const netLateralVel = steerVel + driftVel;
-    this.d += netLateralVel * dt;
-
-    // Guardrail Scrape vs Crash Logic
-    if (Math.abs(this.d) >= halfWidth - 0.25) {
-      const impactAngleDeg = Math.atan2(Math.abs(netLateralVel), Math.max(1, this.speed)) * (180 / Math.PI);
-      const hardWideSlide = (Math.abs(netLateralVel) > 3.2 && this.speed > 38);
-
-      if (impactAngleDeg > 22.0 || hardWideSlide) {
-        this.triggerCrash('rail');
-        return;
-      } else {
-        this.d = Math.sign(this.d) * (halfWidth - 0.32);
-        this.speed = Math.max(0, this.speed * (1.0 - 0.20 * dt * 60));
-        this.wobbleTimer = 0.45;
-        this.wobbleMagnitude = 0.18;
-      }
-    }
-
-    // Strict safety clamp inside barriers at all times
-    this.d = THREE.MathUtils.clamp(this.d, -halfWidth + 0.35, halfWidth - 0.35);
     const kmh = this.getSpeedKmh();
     if (kmh > this.topSpeedReachedKmh) this.topSpeedReachedKmh = kmh;
 
@@ -510,7 +479,7 @@ export class Bike {
     // 5. RPM & Gear Simulation
     this.updateGears(dt);
 
-    // 6. Drafting & Slipstream Detection (Phase 0 Fix: speed > 80 km/h, 4-16m ahead, 0.5s persistence)
+    // 6. Drafting & Slipstream Detection
     this.checkDrafting(rivalsList, trafficList, dt);
     if (this.isDrafting) {
       this.totalDraftSeconds += dt;
@@ -519,22 +488,28 @@ export class Bike {
     // 7. Near Miss Detection
     this.checkNearMisses(trafficList, dt);
 
-    // 8. Collisions with Traffic Vehicles (Disabled during ghost invulnerability)
+    // 8. Collisions with Traffic Vehicles
     if (this.ghostTimer <= 0) {
       this.checkTrafficCollisions(trafficList);
     }
 
-    // 9. Animate Rider
+    // 9. Animate Rider & Spin Wheels
     this.rider.updateAnimation(this.lean, this.getSpeedKmh(), controls.brake > 0.2, this.wheelie);
 
-    // Spin wheels
     const wheelRot = (this.speed / 0.32) * dt;
     this.frontWheel.rotation.x += wheelRot;
     this.rearWheel.rotation.x += wheelRot;
 
-    // Audio update for player
+    // 10. Dynamic Audio update for player
     if (this.isPlayer) {
-      audio.updateEngine(this.rpmRatio, this.getSpeedKmh(), this.isNitro, this.gripDemandRatio || 0);
+      audio.updateEngine(
+        this.rpmRatio,
+        this.getSpeedKmh(),
+        this.isNitro,
+        this.gripDemandRatio || 0,
+        this.isDrifting || this.isSliding,
+        this.offRoadFactor || 0
+      );
     }
 
     this.syncTransform();
@@ -561,7 +536,6 @@ export class Bike {
   }
 
   checkDrafting(rivals, traffic, dt = 0.016) {
-    // Phase 0 Fix: Drafting only occurs at speed > 80 km/h
     if (this.getSpeedKmh() < 80) {
       this.isDrafting = false;
       this.draftPersistTimer = 0;
@@ -578,14 +552,12 @@ export class Bike {
       if (sDist < -totalLen * 0.5) sDist += totalLen;
       if (sDist > totalLen * 0.5) sDist -= totalLen;
 
-      // 4 to 16 meters ahead in the same lane (|Δd| < 1.2 m)
       if (sDist > 4 && sDist < 16 && Math.abs(other.d - this.d) < 1.2) {
         inDraftRange = true;
         break;
       }
     }
 
-    // Must persist 0.5s before bonus triggers
     if (inDraftRange) {
       this.draftPersistTimer += dt;
       if (this.draftPersistTimer >= 0.5) {
@@ -620,10 +592,8 @@ export class Bike {
       const vHalfW = (v.width || 1.8) / 2;
       const vHalfL = (v.length || 3.8) / 2;
 
-      // Calculate edge-to-edge lateral gap
       const edgeGap = Math.abs(v.d - this.d) - (vHalfW + 0.35);
 
-      // Pass within 0.05m to 1.45m of vehicle edge while alongside
       if (edgeGap >= 0.05 && edgeGap <= 1.45 && sDist < (vHalfL + 2.2)) {
         v.hasNearMissed = true;
         this.nearMissCombo++;
@@ -650,14 +620,19 @@ export class Bike {
       const sDist = Math.abs(sDiff);
       const dDist = Math.abs(v.d - this.d);
 
-      // Bounding box overlap
       if (sDist < (v.length || 3.8) / 2 + 1.1 && dDist < (v.width || 1.8) / 2 + 0.45) {
         if (this.speed > 28) {
           this.triggerCrash('traffic');
         } else {
-          // Slow glance
-          this.speed *= 0.5;
-          this.d += Math.sign(this.d - v.d) * 1.5;
+          // Smooth deflection on low-speed traffic brush
+          this.speed *= 0.55;
+          const pushSign = Math.sign(this.d - v.d) || 1;
+          this.d += pushSign * 1.4;
+          this.wobbleTimer = 0.35;
+          this.wobbleMagnitude = 0.14;
+          if (this.isPlayer && typeof this.onRailScrape === 'function') {
+            this.onRailScrape(0.6);
+          }
         }
         break;
       }
@@ -675,17 +650,17 @@ export class Bike {
     this.isDrafting = false;
     this.draftPersistTimer = 0;
     this.gripDemandRatio = 0;
+    this.isSliding = false;
+    this.isDrifting = false;
     this.hadCrashThisLap = true;
     this.currentNitroChain = 0;
 
     const halfWidth = (this.spline.trackData?.roadWidth || 14) / 2;
     if (this.crashType === 'rail') {
-      // Rail impacts clamp bike along the guardrail
       this.d = Math.sign(this.d || 1) * (halfWidth - 0.45);
       this.crashSlideDir = 0;
       this.bikeMesh.rotation.set(0.4, 0.8, 1.4);
     } else {
-      // Traffic hit tumbles forward along current d without snapping to rail
       this.d = THREE.MathUtils.clamp(this.d, -halfWidth + 0.65, halfWidth - 0.65);
       this.crashSlideDir = (Math.random() - 0.5) * 1.0;
       this.bikeMesh.rotation.set(0.35, 0.25, 1.25);
@@ -701,8 +676,8 @@ export class Bike {
 
   respawnOnRoad(trafficList = []) {
     this.isCrashed = false;
-    this.enterGhostMode(1.5); // 1.5s ghost invulnerability
-    this.speed = Math.max(16.0, (this.preCrashSpeed || 30.0) * 0.60); // 60% of pre-crash speed
+    this.enterGhostMode(1.5);
+    this.speed = Math.max(16.0, (this.preCrashSpeed || 30.0) * 0.60);
 
     const lanes = this.spline.getLaneCenters ? this.spline.getLaneCenters() : [-3.5, 0, 3.5];
     const totalLen = this.spline.totalLength;
@@ -729,10 +704,13 @@ export class Bike {
     this.rider.resetPose();
     this.wheelie = 0;
     this.stoppie = 0;
+    this.accelSquat = 0;
+    this.brakeDive = 0;
+    this.steerAngle = 0;
+    this.slideAngle = 0;
     this.lean = 0;
     this.wobbleTimer = 0;
 
-    // Clear traffic within 40m ahead
     if (this.onRespawn) {
       this.onRespawn(this.s, 40);
     }
@@ -742,7 +720,13 @@ export class Bike {
     this.s = 0;
     this.d = 0;
     this.speed = 0;
+    this.lateralVel = 0;
+    this.longitudinalAccel = 0;
     this.lean = 0;
+    this.steerAngle = 0;
+    this.accelSquat = 0;
+    this.brakeDive = 0;
+    this.slideAngle = 0;
     this.wheelie = 0;
     this.stoppie = 0;
     this.gear = 1;
@@ -768,8 +752,12 @@ export class Bike {
     this.cleanMeters = 0;
     this.rider.resetPose();
     this.isSliding = false;
+    this.isDrifting = false;
+    this.isOffRoad = false;
+    this.offRoadFactor = 0;
     this.isWrongWay = false;
     this.isNitro = false;
+    this.wasNitro = false;
     this.isDrafting = false;
     this.draftTimer = 0;
     this.draftPersistTimer = 0;
@@ -778,6 +766,10 @@ export class Bike {
     this.lap = 1;
     this.bikeMesh.rotation.set(0, 0, 0);
     this.bikeMesh.position.set(0, 0, 0);
+    if (this.steerGroup) {
+      this.steerGroup.rotation.set(0, 0, 0);
+      this.steerGroup.position.set(0, 0, 0.78);
+    }
     this.flameL.visible = false;
     this.flameR.visible = false;
     this.nitro = this.nitroCapacity;
@@ -841,11 +833,21 @@ export class Bike {
     // Orientation: align with track Frenet frame
     this.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), frame.tangent);
 
-    // Apply lean, wheelie, and stoppie to bikeMesh
+    // Apply lean, dynamic pitch (wheelie + acceleration squat vs stoppie + brake nose-dive),
+    // drift yaw, and front fork/handlebar steering rotation
     if (!this.isCrashed) {
       this.bikeMesh.rotation.z = this.lean;
-      this.bikeMesh.rotation.x = -this.wheelie * 0.48 + this.stoppie * 0.25;
-      this.bikeMesh.position.y = this.wheelie * 0.25;
+      this.bikeMesh.rotation.y = this.slideAngle || 0;
+      const totalPitch = -(this.wheelie * 0.48 + (this.accelSquat || 0))
+        + (this.stoppie * 0.25 + (this.brakeDive || 0));
+      this.bikeMesh.rotation.x = totalPitch;
+      this.bikeMesh.position.y = this.wheelie * 0.25 - (this.brakeDive || 0) * 0.12;
+
+      if (this.steerGroup) {
+        this.steerGroup.rotation.y = this.steerAngle || 0;
+        // Subtle front fork suspension compression under braking
+        this.steerGroup.position.y = -(this.brakeDive || 0) * 0.14;
+      }
     }
   }
 

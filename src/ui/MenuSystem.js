@@ -508,6 +508,13 @@ export class MenuSystem {
               <button id="settings-mute-toggle" class="btn btn-secondary">${audio.muted ? 'MUTED' : 'SOUND ON'}</button>
             </div>
             <div class="setting-row">
+              <div><strong>MUSIC &amp; SFX VOLUME</strong><div class="setting-sub">Adjust synthwave BGM and procedural bike SFX levels</div></div>
+              <div class="seg-group" style="gap:14px;align-items:center;">
+                <label style="font-size:12px;font-weight:700;display:flex;align-items:center;gap:6px;">BGM <input id="settings-music-vol" type="range" min="0" max="1" step="0.05" value="${audio.musicVolume}" style="width:80px;"/></label>
+                <label style="font-size:12px;font-weight:700;display:flex;align-items:center;gap:6px;">SFX <input id="settings-sfx-vol" type="range" min="0" max="1" step="0.05" value="${audio.sfxVolume}" style="width:80px;"/></label>
+              </div>
+            </div>
+            <div class="setting-row">
               <div><strong>GRAPHICS QUALITY</strong><div class="setting-sub">Shadow map, resolution scaling & density</div></div>
               <div class="seg-group">
                 ${qualities.map(q => `<button class="seg-btn ${settings.quality === q ? 'active' : ''}" data-quality="${q}">${q.toUpperCase()}</button>`).join('')}
@@ -537,9 +544,22 @@ export class MenuSystem {
       this.root.querySelector('#menu-back-btn').onclick = () => this.show('main');
       this.root.querySelector('#settings-mute-toggle').onclick = () => {
         audio.toggleMute();
+        audio.playUIClick();
         this.callbacks.onMuteSync?.(audio.muted);
         this.render();
       };
+      const musicVolInput = this.root.querySelector('#settings-music-vol');
+      if (musicVolInput) {
+        musicVolInput.oninput = (e) => {
+          audio.setMusicVolume(parseFloat(e.target.value));
+        };
+      }
+      const sfxVolInput = this.root.querySelector('#settings-sfx-vol');
+      if (sfxVolInput) {
+        sfxVolInput.oninput = (e) => {
+          audio.setSfxVolume(parseFloat(e.target.value));
+        };
+      }
       this.root.querySelectorAll('[data-quality]').forEach(btn => {
         btn.onclick = () => {
           const q = btn.dataset.quality;
